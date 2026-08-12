@@ -96,11 +96,3 @@ MIT - see [`LICENSE`](LICENSE).
 
 ---
 
-### Things still to do before making this repository public
-
-- [ ] Replace the placeholder repository URL in `CITATION.cff`.
-- [ ] Confirm the MIT license choice (a reasonable default for research code, but your call/your institution's may have a preference).
-- [ ] Decide how to handle the large excluded data files (~254MB best-model object, ~250MB regulatory-region table, multi-GB methylation matrices, 15GB raw coverage files) - Git LFS, an external Zenodo/OSF deposit, or leave them as "regenerate via the pipeline" - see [`data/README.md`](data/README.md) for exactly what's affected.
-- [ ] Decide whether to commit a `renv.lock` for fully pinned package versions (see note at the bottom of `environment/R_dependencies.txt`).
-- [ ] Confirm `04_regulatory_region_mapping/06_regulatory_region_models.Rmd` produces the figure panel layout you want to keep.
-- [ ] Check total clone size is acceptable to you (`data/` alone is currently ~110MB, mostly two ~45MB predicted-age CSVs) - trim further if you want a leaner repo.
