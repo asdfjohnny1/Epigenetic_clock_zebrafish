@@ -1,0 +1,376 @@
+---
+title: "Cross-Tissue analysis - part 8: dynamic_network_pca_entropy"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 06 / Aim 2: Cross-Tissue Ageing Biology - part 8 of 10
+=================================================================
+Tile-level and tissue-level PCA of methylation profiles, plus methylation variance and entropy analysis per tissue.
+
+Depends on objects created by part 7 (07_methylation_drift_and_pcgt_enrichment.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part8}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+# Dynamic and network-level analyses
+
+PCA or network clustering on all model CpGs to identify organ groupings and systemic mehtylation modules 
+
+Entropy or variane of methyaltion patters per orga to quantify stochastic epigenetic drift - https://doi.org/10.1111/acel.13492
+
+##Combined network or PCA for organ grouping
+
+To detect shared methylation signatures across organs:
+```{r oo, message=FALSE, warning=FALSE }
+#============================================================
+# Libraries
+#------------------------------------------------------------
+suppressPackageStartupMessages({
+library(dplyr)        # Data wrangling
+library(ggplot2)      # Plotting
+library(ggfortify)    # autoplot for PCA
+library(matrixStats)  # row/column summaries
+library(ggpubr)     # theme_classic2 (optional)
+})
+
+# ============================================================
+# 1. Define organ list and CpG selections
+# ============================================================
+# Specify the organs to include in the analysis
+orgs <- c("Brain", "Caudal_Fin", "Intestines")
+
+# Select the CpGs of interest for PCA (typically robust or top-ranked)
+selected_cpg <- best_cpg_overlap_single
+
+
+# ============================================================
+# 2. Filter methylation data by selected CpGs
+# ============================================================
+# Keep only the methylation measurements corresponding to the selected CpGs
+df <- methylation_best_cpgs %>%
+  filter(tile %in% selected_cpg)
+
+
+# ============================================================
+# 3. Prepare merged methylation dataframe
+# ============================================================
+# In this case, df already contains all selected CpGs, so we assign it directly
+merged_meth <- df
+
+# Select only the columns required for PCA: tile ID, methylation value, and organ
+merged_meth_matrix <- merged_meth %>%
+  dplyr::select(tile, methylation, Organ)
+
+
+# ============================================================
+# 4. Summarise methylation per tile × organ and create pca file
+# ============================================================
+# Compute the mean methylation per tile in each organ
+# This collapses any replicate measurements (technical or biological) into a single value
+tile_organ_means <- merged_meth_matrix %>%
+  group_by(tile, Organ) %>%
+  summarise(
+    methylation = mean(methylation, na.rm = TRUE),
+    .groups = "drop"
+  )
+tile_mat <- tile_organ_means %>%
+    pivot_wider(names_from = Organ, values_from = methylation) %>%
+    column_to_rownames("tile") %>%
+    as.matrix()
+
+tile_sd <- apply(tile_mat, 1, sd, na.rm = TRUE)
+tile_mat_filt <- tile_mat[tile_sd > 0 & !is.na(tile_sd), ]
+
+
+pca_tile <- prcomp(tile_mat_filt, scale. = TRUE)
+
+# ============================================================
+# 5. Determine "dominant organ" for each tile
+# ============================================================
+# For visualization purposes, assign each tile to the organ in which its methylation is highest
+# This is used to colour points in the tile-centric PCA
+tile_labels <- tile_organ_means %>%
+  group_by(tile) %>%
+  slice_max(methylation, n = 1, with_ties = FALSE) %>%  # choose one organ per tile
+  dplyr::select(tile, dominant_organ = Organ)
+
+
+
+# ============================================================
+# 6. Tile-centric PCA plot
+# ============================================================
+# Tiles are the observations (rows), organs are the features (columns)
+# PCA reveals patterns of organ-specific methylation across tiles
+p <- autoplot(
+  pca_tile,                # PCA object for tile-centric analysis
+  data = tile_labels,      # colour tiles by their "dominant organ"
+  colour = "dominant_organ",
+  alpha = 0.6,
+  size = 2
+) +
+
+  scale_colour_manual(values = okabe_ito_palette(3)) +
+  labs(
+    subtitle = "Tiles coloured by organ of maximal methylation",
+    colour = "Dominant Organ"
+  )+
+  theme(legend.position = "bottom")  +
+  plot_theme 
+
+p
+# Save figure
+ggsave(
+  filename = file.path(output_directory, "Tile_PCA_plot_overlapping_Soma.png"),
+  plot = p,
+  height = 5,
+  width = 7,
+  dpi = 400
+)
+# ============================================================
+# 7. Organ-centric PCA
+# ============================================================
+# Prepare a PCA where organs are the observations
+# Start with the same filtered tile × organ matrix
+# Transpose so rows = organs, columns = tiles
+organ_mat <- t(tile_mat_filt)
+
+# Remove any tiles that have zero variance across organs
+# This avoids errors in scaling and PCA computation
+tile_sd2 <- apply(organ_mat, 2, sd, na.rm = TRUE)
+organ_mat_filt <- organ_mat[, tile_sd2 > 0 & !is.na(tile_sd2)]
+
+# Run PCA on organs (rows)
+# Each organ is positioned in "tile methylation space"
+pca_organ <- prcomp(organ_mat_filt, scale. = TRUE)
+
+# Plot the organ-centric PCA
+# Here, one point per organ is expected
+# Loadings are omitted because tiles (features) vastly outnumber organs (observations)
+p <- autoplot(
+  pca_organ,
+  data = data.frame(Organ = rownames(pca_organ$x)),
+  colour = "Organ",
+  size = 5
+) +
+
+  scale_colour_manual(values = okabe_ito_palette(3)) +
+  labs(
+title = "PCA",
+    colour = ""
+  )+
+  theme(legend.position = "bottom")  +
+  plot_theme 
+p
+pca_org_level <- p
+
+# Save figure
+ggsave(
+  filename = file.path(output_directory, "Organ_PCA_plot_overlapping_Soma.png"),
+  plot = pca_org_level,
+  height = 5,
+  width = 5,
+  dpi = 400
+)
+
+```
+ 
+## Methylation variance and entropy per organ
+
+Entropy and variability indicate stochastic drift.
+
+```{r pp}
+suppressPackageStartupMessages({
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+})
+#============================================================
+# 1️⃣ CpG-wise Shannon entropy per organ
+#============================================================
+
+selected_cpg <- best_cpg_overlap_single
+
+df <- methylation_best_cpgs %>%
+  filter(tile %in% selected_cpg)
+
+merged_meth_matrix <- df %>%
+  dplyr::select(tile, methylation, Organ, individual_fish_ID)
+
+
+#  Summarise methylation per tile × organ
+# Compute the mean methylation per tile in each organ
+# This collapses any replicate measurements (technical or biological) into a single value
+tile_organ_means <- merged_meth_matrix %>%
+  group_by(tile, Organ, individual_fish_ID) %>%
+  summarise(
+    methylation = mean(methylation, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+entropy_per_cpg <- lapply(unique(tile_organ_means$Organ), function(org){
+  
+  # Subset df for this organ
+  mat <- tile_organ_means %>% filter(Organ == org) %>%
+    dplyr::select(tile, methylation, individual_fish_ID) %>%
+    pivot_wider(names_from = individual_fish_ID, values_from = methylation)
+  
+  # Extract numeric matrix (rows = CpGs, cols = samples)
+  mat_numeric <- as.matrix(mat[,-1]) / 100  # scale 0–1
+  
+  # clamp to avoid log2(0)
+  mat_numeric <- pmin(pmax(mat_numeric, 1e-6), 1-1e-6)
+  
+  # Compute entropy per CpG across samples
+  entropy <- apply(mat_numeric, 1, function(x){
+    mean(-x*log2(x) - (1-x)*log2(1-x))
+  })
+  
+  data.frame(
+    organ = org,
+    tile = mat$tile,
+    entropy = entropy
+  )
+}) %>% bind_rows()
+
+
+# Plot CpG-wise entropy
+p_cpg <- ggplot(entropy_per_cpg, aes(x = organ, y = entropy, colour = organ, fill = organ)) +
+  geom_violin(alpha = 0.6) +
+  geom_jitter(width = 0.2, alpha = 0.2) +
+  stat_summary(fun = mean, geom = "point", color = "black", show.legend = F) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", color = "black", width = 0.2, show.legend = F) +
+
+  scale_colour_manual(values = okabe_ito_palette(length(unique(entropy_per_cpg$organ)))) +
+  scale_fill_manual(values = okabe_ito_palette(length(unique(entropy_per_cpg$organ)))) +
+  labs(title = "CpG-wise methylation entropy per organ",
+       y = "Methylation heterogeneity (0–1)",
+       x = "",
+       colour = "",
+       fill = "") +
+  ylim(0,1) +
+  theme(legend.position = "bottom")  +
+  plot_theme 
+
+
+signif_data <- get_signif_per_group(
+  df = entropy_per_cpg,
+  y_var = "entropy",
+  x_var = "organ",
+  group_var = "organ"
+)
+# Add dynamic significance results if they exist.
+if (!is.null(signif_data) && nrow(signif_data) > 0) {
+  signif_data$y.position <- signif_data$y.position
+
+  p_cpg <- p_cpg + stat_pvalue_manual(
+    signif_data,
+    label = "label",
+    tip.length = 0.0001,
+    hide.ns = FALSE,
+    size = 4
+  )
+}
+p_cpg
+
+ggsave(file.path(output_directory, "CpG_entropy_normalised_overlapping_soma.png"),
+       plot = p_cpg, height = 7, width = 7, dpi = 400)
+
+
+#============================================================
+# 2️⃣ Sample-wise (global) entropy per organ
+#============================================================
+
+sample_entropy <- lapply(unique(tile_organ_means$Organ), function(org){
+  
+  mat <- tile_organ_means %>% filter(Organ == org) %>%
+    dplyr::select(tile, methylation, individual_fish_ID) %>%
+    pivot_wider(names_from = tile, values_from = methylation)
+  
+  mat_numeric <- as.matrix(mat[,-1]) / 100
+  mat_numeric <- pmin(pmax(mat_numeric, 1e-6), 1-1e-6)
+  
+  # Row-wise entropy per sample
+  entropy <- apply(mat_numeric, 1, function(x){
+    mean(-x*log2(x) - (1-x)*log2(1-x))
+  })
+  
+  data.frame(
+    organ = org,
+    sample_id = mat$individual_fish_ID,
+    entropy = entropy
+  )
+}) %>% bind_rows()
+
+
+# Plot sample-wise entropy
+p_sample <- ggplot(sample_entropy, aes(x = organ, y = entropy, colour = organ, fill = organ)) +
+  geom_violin(alpha = 0.6) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.2)+ 
+  stat_summary(fun = mean, geom = "point", color = "black", show.legend = FALSE) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", color = "black", width = 0.2, show.legend = FALSE) +
+
+  scale_colour_manual(values = okabe_ito_palette(length(unique(sample_entropy$organ)))) +
+  scale_fill_manual(values = okabe_ito_palette(length(unique(sample_entropy$organ)))) +
+  labs(title = "Sample-wise methylation entropy per organ",
+       y = "Methylation heterogeneity (0–1)",
+       x = " ",
+       colour = "",
+       fill = "") +
+  plot_theme +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle=20,hjust=1))  
+  
+
+signif_data <- get_signif_per_group(
+  df = sample_entropy,
+  y_var = "entropy",
+  x_var = "organ",
+  group_var = "organ",
+    step_value = 7
+)
+
+# Add dynamic significance results if they exist.
+if (!is.null(signif_data) && nrow(signif_data) > 0) {
+  signif_data$y.position <- signif_data$y.position+ 0.05
+
+  p_sample <- p_sample + stat_pvalue_manual(
+    signif_data,
+    label = "label",
+    tip.length = 0.0001,
+    hide.ns = FALSE,
+    size = 4
+  )
+}
+
+p_sample
+entropy_plot <- p_sample
+
+ggsave(file.path(output_directory, "Sample_entropy_normalised_overlapping_soma.png"),
+       plot = entropy_plot, 
+       height = 6, 
+       width = 7, 
+       dpi = 400)
+
+
+m<- lmer(entropy ~ organ +(1|sample_id), data = sample_entropy)
+
+summary(m)
+Anova(m, type = "III")
+emmeans(m,pairwise ~organ)
+```
+
+# ~ 

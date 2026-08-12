@@ -1,0 +1,739 @@
+---
+title: "Clock Determinants analysis - part 3: determinants_of_performance"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 05 / Aim 1: Clock Design Benchmarking - part 3 of 5
+=================================================================
+Linear mixed-effects models quantifying which methodological choices (CpG aggregation, filtering, regression family, etc.) determine clock performance; CpG-count scaling analysis; identification of high-impact CpGs.
+
+Depends on objects created by part 2 (02_best_model_ranking_significance.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part3}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+# Determinants of success in clock 
+
+
+
+### Plots
+```{r 33}
+# Load required packages quietly
+suppressPackageStartupMessages({
+  library(dotwhisker)  # for dot-and-whisker plots
+  library(sjPlot)      # for visualising model effects
+  library(ggplot2)
+})
+
+metrics_scores <- metrics_data_validation %>%
+  group_by(cpg_grouping, model, organ) %>%
+  mutate(
+    # Rescale MAE (invert so that lower MAE → higher score)
+    mae_score = scales::rescale(-mae),
+
+    # Rescale R² to 0–1, where higher values → higher score
+    r2_score = scales::rescale(r_squared_value)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # Composite continuous performance metric:
+    # Higher values represent better-performing clocks
+    performance_score = mae_score + r2_score,
+
+    # Convert design factors to categorical variables
+    cpg_grouping = factor(cpg_grouping),
+    tile_methode = factor(tile_methode),
+    model = factor(model),
+    organ = factor(organ),
+    rsq_threshold = factor(rsq_threshold),
+    filter = factor(filter),
+
+    # Scale numeric hyperparameters (important for mixed-model stability)
+    epse_scaled = scale(epse)
+  )
+
+# -----------------------------
+# 1. Dot-and-whisker plot of fixed effects
+# Visualises estimated effects of predictors on performance_score.
+# Points = coefficient estimates; whiskers = confidence intervals.
+# -----------------------------
+p <- dwplot(m, dot_args = list(aes(colour = factor(term))), whisker_args = list(aes(colour = factor(term)))) +
+  scale_colour_manual(values = okabe_ito_palette(23)) +
+ guides(colour = "none")+
+  theme_bw(base_size = 14) +
+  ggtitle("Fixed Effects: Dot-and-Whisker Plot")
+
+p
+
+ggsave(paste0(output_directory,"/Dot_and_whisker_plot_of_fixed_effects.png"),
+       p,
+       height = 7, 
+       width = 7, 
+       dpi = 400)
+
+
+# -----------------------------
+# 2. Observed vs. predicted performance
+# Compares fitted model values to observed performance_score.
+# Smoother line shows overall trend and fit quality.
+# -----------------------------
+metrics_scores$fitted <- fitted(m)  # add fitted values to dataframe
+
+# fit the linear model
+lm_fit <- lm(performance_score ~ fitted*organ, data = metrics_scores)
+slope_val <- round(coef(lm_fit))
+
+p <- ggplot(metrics_scores, aes(x = fitted, y = performance_score, colour = organ)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm") +
+  scale_colour_manual(values = master_pal) +
+  theme_classic2(base_size = 14)  +
+  labs(
+    x = "Fitted performance score",
+    y = "Observed performance score",
+    title = "Observed vs Predicted Performance",
+    colour = ""
+  ) 
+
+p
+
+ggsave(paste0(output_directory,"/Observed_vs_predicted_performance.png"),
+       p,
+       height = 6, 
+       width = 7, 
+       dpi = 400)
+# -----------------------------
+# 3. Fixed effects coefficient plot
+# Shows estimates and confidence intervals numerically for all fixed effects.
+# Highlights direction and magnitude of influence on performance.
+# -----------------------------
+p <- plot_model(m, type = "est", show.values = TRUE, value.offset = 0.3) +
+  scale_colour_manual(values = okabe_ito) +
+  ggtitle("Fixed Effects Coefficients with Confidence Intervals") + 
+  theme_bw(base_size = 14)
+p
+
+ggsave(paste0(output_directory,"/Fixed_effects_coefficient_plot.png"),
+       p,
+       height = 8, 
+       width = 9, 
+       dpi = 400)
+
+```
+
+##  CpG number influence on clocks 
+#### Are there any overlapp between cpgs selected and organs 
+```{r 34}
+
+################################################################################
+# Analysis of Cpg candidate, selected and identity on epigenetic clock performance
+# ---------------------------------------------------------
+# This script evaluates how the number of candidate and selected CpG as well as identity most  # strongly influence model performance across thousands of clock configurations. Performance is
+# represented as a composite continuous metric integrating prediction accuracy (MAE) and       # variance explained (R²).
+#
+# The workflow:
+#   1. Load required libraries
+#   2. Construct interpretable performance metrics
+#   3. Fit a mixed model to quantify factor contributions
+#   4. Extract best-performing models per organ
+#   5. Diagnose multicollinearity and correlation structure
+################################################################################
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(purrr)
+  library(tibble)
+})
+
+
+################################################################################
+# 1. Construct a continuous, comparable outcome for model performance
+################################################################################
+
+# The underlying assumption:
+#   - Lower MAE indicates a more accurate age prediction
+#   - Higher R² indicates better variance explanation
+#   - Both metrics must be placed on a common scale
+#   - A combined score captures overall model performance
+
+
+
+
+metrics_scores <- metrics_data_validation %>%
+  group_by(cpg_grouping, model, organ) %>%
+  mutate(
+    mae_score = scales::rescale(-mae),
+    r2_score  = scales::rescale(r_squared_value)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    performance_score = mae_score + r2_score,
+    cpg_grouping = factor(cpg_grouping),
+    tile_methode = factor(tile_methode),
+    model = factor(model),
+    organ = factor(organ),
+    rsq_threshold = factor(rsq_threshold),
+    filter = factor(filter),
+    epse_scaled = scale(epse)
+  ) %>%
+  left_join(
+    cpg_data_validation_long %>% 
+      dplyr::select(unique_model_id, num_selected_cpg, num_candidate_cpg,selected_cpgs, chr,start,end),
+    by = "unique_model_id"
+  )
+
+################################################################################
+# 2. Extract the best-performing model per organ
+################################################################################
+
+# These represent the highest-scoring clocks within each biological organ.
+best1 <- metrics_scores %>%
+  group_by(organ) %>%
+  filter(performance_score == max(performance_score))%>%
+  dplyr::slice(1)
+
+################################################################################
+# 3. overlappingCPGs in best doels and all models 
+################################################################################
+
+# all cpgs which repeatidly are selected for each organ seperatly 
+Multi_organ_best_cpg <- tibble::tibble(
+  organ = names(best_selected_cpgs_organs),
+  selected_cpgs  = best_selected_cpgs_organs
+) |>
+  tidyr::unnest_longer(selected_cpgs, values_to = "selected_cpgs")
+
+# all cpgs which are expressed in all 4 mdoels accross all 4000 runs 
+best_cpg_overlap_all_df <- as.data.frame(best_cpg_overlap_all) %>%
+  dplyr::rename(selected_cpgs = best_cpg_overlap_all) %>%
+  mutate(organ = "Soma")
+
+# cpgs which are expressed in all single tissue mdoels accross all 4000 runs 
+best_cpg_overlap_single_df <- as.data.frame(best_cpg_overlap_single) %>%
+  dplyr::rename(selected_cpgs = best_cpg_overlap_single) %>%
+  mutate(organ = "Soma")
+
+
+###############################################################################
+# 4. Helper function — parse "chr:start:end" into interval table
+###############################################################################
+
+parse_cpg_intervals <- function(cpg_vector) {
+  dt <- tstrsplit(cpg_vector, ":", fixed = TRUE)
+  data.table(
+    chr   = as.integer(dt[[1]]),
+    start = as.integer(dt[[2]]),
+    end   = as.integer(dt[[3]]),
+    cpg_id = cpg_vector
+  )
+}
+
+###############################################################################
+# 5. Build interval lists per organ
+###############################################################################
+
+# ---- ALL MODELS ----
+cpg_intervals_all <- cpg_data_validation_long %>%
+  group_by(organ) %>%
+  summarise(cpgs = list(unique(selected_cpgs)), .groups = "drop") %>%
+  mutate(intervals = map(cpgs, parse_cpg_intervals)) %>%
+  dplyr::select(organ, intervals)
+
+# ---- BEST MODELS ONLY ----
+cpg_intervals_Multi_organ_best <- Multi_organ_best_cpg %>%
+  group_by(organ) %>%
+  summarise(cpgs = list(unique(selected_cpgs)), .groups = "drop") %>%
+  mutate(intervals = map(cpgs, parse_cpg_intervals)) %>%
+  dplyr::select(organ, intervals)
+
+cpg_intervals_overlap_all <- best_cpg_overlap_all_df %>%
+   group_by(organ) %>%
+  summarise(cpgs = list(unique(selected_cpgs)), .groups = "drop") %>%
+  mutate(intervals = map(cpgs, parse_cpg_intervals)) %>%
+  dplyr::select(organ, intervals)
+
+cpg_intervals_overlap_single <- best_cpg_overlap_single_df %>%
+   group_by(organ) %>%
+  summarise(cpgs = list(unique(selected_cpgs)), .groups = "drop") %>%
+  mutate(intervals = map(cpgs, parse_cpg_intervals)) %>%
+  dplyr::select(organ, intervals)
+
+###############################################################################
+# 6. Core function — interval overlap using foverlaps
+###############################################################################
+
+interval_overlap <- function(list_of_dts) {
+  
+  # Start with the first organ's intervals
+  overlap_dt <- copy(list_of_dts[[1]])
+  setkey(overlap_dt, chr, start, end)
+  
+  for (i in 2:length(list_of_dts)) {
+    
+    dt2 <- copy(list_of_dts[[i]])
+    setkey(dt2, chr, start, end)
+    
+    # Perform interval overlap
+    hits <- foverlaps(overlap_dt, dt2, nomatch = 0L)
+    
+    # CLEAN RESULT:
+    # Always reconstruct a fresh interval table with chr/start/end + unique ID
+    overlap_dt <- hits[, .(
+      chr = chr,
+      start = pmax(start, i.start),   # intersected interval start
+      end   = pmin(end, i.end),       # intersected interval end
+      cpg_id = cpg_id                 # original CpG ID
+    )]
+    
+    # Remove invalid (negative) intervals
+    overlap_dt <- overlap_dt[end >= start]
+    
+    # Stop early if no intervals left
+    if (nrow(overlap_dt) == 0L) break
+    
+    setkey(overlap_dt, chr, start, end)
+  }
+  
+  unique(overlap_dt)
+}
+
+
+###############################################################################
+# 7. Wrapper — compute intersections for k-organ combinations
+###############################################################################
+
+compute_organ_overlaps <- function(cpg_interval_table, k) {
+  
+  organ_names <- cpg_interval_table$organ
+  combos <- combn(organ_names, k, simplify = FALSE)
+  
+  map_df(combos, function(combo) {
+    
+    dt_list <- cpg_interval_table$intervals[cpg_interval_table$organ %in% combo]
+    ov      <- interval_overlap(dt_list)
+    
+    tibble(
+      organs = paste(combo, collapse = "_"),
+      k = k,
+      n_shared = nrow(ov),
+      shared_intervals = list(ov)
+    )
+  })
+}
+
+###############################################################################
+# 8. Run overlap analyses — all models & best models
+###############################################################################
+
+# ---- ALL MODELS ----
+overlap_all <- bind_rows(
+  compute_organ_overlaps(cpg_intervals_all, 2),
+  compute_organ_overlaps(cpg_intervals_all, 3),
+  compute_organ_overlaps(cpg_intervals_all, 4)
+)
+
+
+
+# ---- BEST MODELS ----
+overlap_Multi_organ_best  <- bind_rows(
+  compute_organ_overlaps(cpg_intervals_Multi_organ_best , 2),
+  compute_organ_overlaps(cpg_intervals_Multi_organ_best , 3),
+  compute_organ_overlaps(cpg_intervals_Multi_organ_best , 4)
+)
+
+
+###############################################################################
+# 9. Output examples
+###############################################################################
+
+print(overlap_all)
+print(overlap_Multi_organ_best)
+
+# Access example: shared intervals for a all somatic organs x 3 
+overlap_all$shared_intervals[7]
+
+
+
+```
+
+#### Cpg_number models
+```{r 35 }
+
+
+################################################################################
+# 1. Linear mixed model: effect of methodological choices on model performance
+################################################################################
+
+# Rationale:
+#   - performance_score is continuous → LMM appropriate
+#   - organ included as a random effect because each organ contains many 
+#     correlated clock models and should not be treated as fixed levels
+#   - fixed effects represent methodological decisions that may influence 
+#     clock accuracy
+
+metrics_scores <- metrics_data_validation %>%
+  group_by(cpg_grouping, model, organ) %>%
+  mutate(
+    mae_score = scales::rescale(-mae),
+    r2_score  = scales::rescale(r_squared_value)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    performance_score = mae_score + r2_score,
+    cpg_grouping = factor(cpg_grouping),
+    tile_methode = factor(tile_methode),
+    model = factor(model),
+    organ = factor(organ),
+    rsq_threshold = factor(rsq_threshold),
+    filter = factor(filter),
+    epse_scaled = scale(epse)
+  ) %>%
+  left_join(
+    cpg_data_validation_long %>% 
+      dplyr::select(unique_model_id, num_selected_cpg, num_candidate_cpg,selected_cpgs, chr,start,end),
+    by = "unique_model_id"
+  )
+
+m <- lmer(
+  performance_score ~ 
+    num_selected_cpg +num_candidate_cpg + (1|selected_cpgs) + (1|chr)+
+    (1 | organ),
+  data = metrics_scores
+)
+
+summary(m)
+Anova(m)  # Type-II Wald χ² tests for effect significance
+
+# Interpretation summary (add to manuscript):
+#   - tile_methode      : significant moderate effect
+#   - model             : strong determinant of performance
+#   - rsq_threshold     : significant; correlation filtering matters
+#   - filter            : strong effect; CpG coverage thresholds influence accuracy
+#   - epse_scaled       : non-significant; training epochs do not influence results
+#
+# Biological/methodological implication:
+#   Structural choices (CpG selection, filtering stringency, model type)
+#   drive performance more strongly than hyperparameter tuning.
+
+# Exact CpG optima per organ from your data
+cpg_optima <- metrics_scores %>%
+  group_by(organ) %>%
+  summarise(
+    median_cpgs = median(num_selected_cpg),
+    iqr_cpgs = paste0("IQR: ", round(quantile(num_selected_cpg, 0.25)), "-", 
+                      round(quantile(num_selected_cpg, 0.75))),
+    max_perf_cpgs = num_selected_cpg[which.max(performance_score)],
+    perf_at_median = median(performance_score[num_selected_cpg <= median(num_selected_cpg)*1.5]),
+    max_perf = max(performance_score),
+    pct_perf_at_optimal = round((perf_at_median / max_perf) * 100, 0),
+    .groups = "drop"
+  )
+
+print(cpg_optima)
+```
+
+#####plots
+```{r 36}
+# Load required packages quietly
+suppressPackageStartupMessages({
+  library(dotwhisker)  # for dot-and-whisker plots
+  library(sjPlot)      # for visualising model effects
+  library(ggplot2)
+  library(patchwork)
+})
+
+
+
+# -----------------------------
+# 2. Observed vs. predicted performance
+# Compares fitted model values to observed performance_score.
+# Smoother line shows overall trend and fit quality.
+# -----------------------------
+metrics_scores$fitted <- fitted(m)  # add fitted values to dataframe
+
+# fit the linear model
+lm_fit <- lm(performance_score ~ fitted, data = metrics_scores)
+slope_val <- round(coef(lm_fit)[2], 3)
+
+p <- ggplot(metrics_scores, aes(x = fitted, y = performance_score, colour = organ)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", col = "#0072B2") +
+  scale_colour_manual(values = master_pal) +
+  theme_classic2(base_size = 14)  +
+  labs(
+    x = "Fitted performance score",
+    y = "Observed performance score",
+    title = "Observed vs Predicted Performance",
+    colour = ""
+  ) +
+  annotate(
+    "label",
+    x = Inf, y = -Inf,
+    hjust = 1.1, vjust = -0.5,
+    label = paste0("Slope = ", slope_val),
+    label.size = 0,          # no border
+    fill = "white",          # white background
+    alpha = 0.9
+  )
+
+p
+
+ggsave(paste0(output_directory,"/Observed_vs_predicted_performance_nb_cpg.png"),
+       p,
+       height = 6, 
+       width = 7, 
+       dpi = 400)
+
+# -----------------------------
+# 5. Number of candidate
+
+# -----------------------------
+
+pc <- metrics_scores %>%
+  group_by(unique_model_id)%>%
+  dplyr::slice(1)%>%
+  ggplot(aes(x = num_candidate_cpg, y = performance_score, colour = organ)) +
+   geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", show.legend = F, size = 0.8) +
+  scale_colour_manual(values =master_pal) +
+  labs(x = "Number Candidate CpGs", y = "Performance Score", colour = "")+
+  theme_classic2() 
+  #facet_nested(~ cpg_grouping)
+
+ps <- metrics_scores %>%
+   group_by(unique_model_id)%>%
+  dplyr::slice(1)%>%
+  ggplot(aes(x = num_selected_cpg, y = performance_score, colour = organ)) +
+   geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", show.legend = F, size = 0.8) +
+  scale_colour_manual(values =master_pal) +
+  labs(x = "Number Selected CpGs", y = "Performance Score", colour = "")+
+  theme_classic2() 
+ # facet_nested(~ cpg_grouping)
+
+pp <-(pc | ps ) +
+  plot_layout(guides = "collect",
+              axes = "collect") +
+  plot_annotation(tag_levels = "A")
+
+pp
+
+
+ggsave(paste0(output_directory,"/Number_candidate_selected_vs_performance_Scores.png"),
+       pp,
+       height = 6, 
+       width = 8, 
+       dpi = 400)
+```
+
+
+#### Chromosome 4
+```{r 37}
+
+
+# number per chromosome 
+
+nb_cpg_chr <- metrics_scores %>%
+  group_by(chr) %>%
+  summarise(nb = n())
+
+p3 <- nb_cpg_chr %>%
+  ggplot(aes(y = nb, x = chr, colour = "#E69F00")) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6, alpha = 0.5, position = position_dodge(0.7)) +
+  stat_summary(fun = mean, geom = "line", position = position_dodge(0.7), size = 0.2, colour = "darkgrey", aes(group = 1))+
+  stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+  #geom_jitter(alpha = 0.05)+
+  scale_colour_manual(values =okabe_ito) +
+  labs(y = "Number of Selected CpGs", x = "Chromosome", colour = "")+
+  guides(colour = "none")+
+  ylim(0,max(nb_cpg_chr$nb))+
+  theme_classic2() 
+  #facet_nested(~ cpg_grouping)
+
+p3
+
+
+ggsave(paste0(output_directory,"/Number_selected_CpG_Chromosome.png"),
+       p3,
+       height = 6, 
+       width = 9, 
+       dpi = 400)
+
+# number cpg per cpg_goruping 
+
+nb_cpg_chr <- metrics_scores %>%
+  group_by(chr,cpg_grouping) %>%
+  summarise(nb = n())
+
+p3 <- nb_cpg_chr %>%
+  ggplot(aes(y = nb, x = chr, colour = cpg_grouping, group = cpg_grouping)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6, alpha = 0.5, position = position_dodge(0.7)) +
+  stat_summary(fun = mean, geom = "line", position = position_dodge(0.7), size = 0.2, colour = "darkgrey")+
+  stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+  #geom_jitter(alpha = 0.05)+
+  scale_colour_manual(values =master_pal) +
+  labs(y = "Number of Selected CpGs", x = "Chromosome", colour = "")+
+  ylim(0,max(nb_cpg_chr$nb))+
+  theme_classic2() 
+  #facet_nested(~ cpg_grouping)
+
+p3
+
+
+ggsave(paste0(output_directory,"/Number_selected_CpG_Chromosome_cpg_grouping.png"),
+       p3,
+       height = 7, 
+       width = 9, 
+       dpi = 400)
+
+# number cpg per organ 
+
+nb_cpg_chr <- metrics_scores %>%
+  group_by(chr,organ) %>%
+  summarise(nb = n())
+
+p3 <- nb_cpg_chr %>%
+  ggplot(aes(y = nb, x = chr, colour = organ, group = organ)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6, alpha = 0.5, position = position_dodge(0.7)) +
+  stat_summary(fun = mean, geom = "line", position = position_dodge(0.7), size = 0.2, colour = "darkgrey")+
+  stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+  #geom_jitter(alpha = 0.05)+
+  scale_colour_manual(values =master_pal) +
+  labs(y = "Number of Selected CpGs", x = "Chromosome", colour = "")+
+  ylim(0,max(nb_cpg_chr$nb))+
+  theme_classic2() 
+  #facet_nested(~ cpg_grouping)
+
+p3
+
+
+ggsave(paste0(output_directory,"/Number_selected_CpG_Chromosome_per_organ.png"),
+       p3,
+       height = 7, 
+       width = 9, 
+       dpi = 400)
+
+
+# which ones are on long arm of Chr4 
+centromere_pos <- 25975534  # numeric
+
+
+filter_chr4_long_arm <- function(df) {
+  df %>% filter(chr %in% c("4")) %>% filter(start > centromere_pos | end > centromere_pos)
+}
+
+
+chr_4_long_arm <- filter_chr4_long_arm(metrics_scores)
+
+```
+
+## Does the presence of aspecific CpG predict higher model performance
+```{r 38}
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(lme4)
+  library(car)
+})
+
+# Give a ranking of CpGs by the average performance of the clocks that contain them.
+cpg_effects <- metrics_scores %>%
+  group_by(selected_cpgs) %>%
+  summarise(
+    n_models = n(),
+    mean_performance = mean(performance_score, na.rm = TRUE),
+    sd_performance = sd(performance_score, na.rm = TRUE),
+    median_performance = median(performance_score, na.rm = TRUE)
+  ) %>%
+  arrange(desc(mean_performance))
+
+
+
+m <- lmer(performance_score ~ 1 + (1|selected_cpgs), data = metrics_scores)
+summary(m)
+
+
+
+# Top most effective cpgs 
+top_cpgs <- cpg_effects %>%
+  arrange(desc(mean_performance)) %>%
+  slice_head(n = 50)  # or whatever number you want
+
+top_cpgs
+
+
+# visualise perfoamnce vs frequency 
+
+p <- ggplot(cpg_effects, aes(n_models, mean_performance)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_classic2(base_size = 14)  +
+  labs(
+    x = "Number of Models Containing CpG",
+    y = "Mean Performance Score",
+    title = "CpG Contribution Across Models",
+    subtitle = "Frequency vs effect on model performance"
+  )
+
+p
+
+
+ggsave(paste0(output_directory,"/CpG_perfoamnce_vs_frequency .png"),
+       p,
+       height = 6, 
+       width = 6, 
+       dpi = 400)
+
+# organ-specific high-impact CpGs
+cpg_effects_by_organ <- metrics_scores %>%
+  group_by(organ, selected_cpgs) %>%
+  summarise(
+    n_models = n(),
+    mean_performance = mean(performance_score, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(organ, desc(mean_performance))
+
+
+p <- ggplot(cpg_effects_by_organ, aes(y = mean_performance,  x = organ, colour = organ, fill = organ)) +
+  introdataviz::geom_split_violin(alpha = 0.2)+
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6, alpha = 0.5, position = position_dodge(0.7)) +
+  stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+  #geom_jitter(alpha = 0.05)+
+  scale_colour_manual(values =master_pal)+
+  scale_fill_manual(values =master_pal)+
+  theme_classic2() +
+  labs(
+   y = "Mean performance contribution",
+    x = "",
+    title = "Organ-specific CpG importance",
+    colour = " "
+  )+
+  guides(fill = "none")
+
+p
+
+
+ggsave(paste0(output_directory,"/Organ-specific_high-impact_CpGs.png"),
+       p,
+       height = 6, 
+       width = 6, 
+       dpi = 400)
+```
+
+
+# ~ 
+
+

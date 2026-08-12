@@ -1,0 +1,225 @@
+---
+title: "Cross-Tissue analysis - part 2: quality_control_and_model_matrices"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 06 / Aim 2: Cross-Tissue Ageing Biology - part 2 of 10
+=================================================================
+Batch-effect QC (PCA on methylation matrix, PC1/PC2 vs batch), then loading and cleaning the raw per-model result matrices from all 4,320 trained clocks.
+
+Depends on objects created by part 1 (01_setup_palettes_functions_data_loading.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part2}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+# Quality control 
+```{r}
+library(readxl)
+library(here)
+library(tidyverse)
+
+meta <- read_excel(here("data/final_metadata_uniqueID_new.xlsx")) %>%
+  filter(Clock =="multitissue")
+
+
+meth_raw <- best_model_list[["Multi_organ"]][["methylation_data"]]
+
+# --- 1) Identify sample columns (exclude annotation columns) ---
+annot_cols <- c("chr", "start", "end", "strand", "Probe")
+sample_cols <- setdiff(colnames(meth_raw), intersect(colnames(meth_raw), annot_cols))
+
+# Keep only columns that exist in metadata IDs
+sample_cols <- intersect(sample_cols, meta$Sanger_new_ID)
+
+stopifnot(length(sample_cols) > 2)
+
+# Subset methylation matrix (features x samples)
+meth_mat <- as.matrix(meth_raw[, sample_cols, drop = FALSE])
+
+# --- 2) Align metadata to methylation columns ---
+meta2 <- meta[match(colnames(meth_mat), meta$Sanger_new_ID), ]
+stopifnot(all(meta2$Sanger_new_ID == colnames(meth_mat)))
+
+# Ensure batch is a factor
+meta2$batch <- as.factor(meta2$sequencing_block)
+
+# --- 3) Handle missing values (PCA cannot take NA) ---
+# Mean impute per CpG/feature (row-wise)
+na_idx <- is.na(meth_mat)
+if (any(na_idx)) {
+  row_means <- rowMeans(meth_mat, na.rm = TRUE)
+  meth_mat[na_idx] <- row_means[row(na_idx)][na_idx]
+}
+
+# --- 4) PCA ---
+pca <- prcomp(t(meth_mat), center = TRUE, scale. = TRUE)
+var_exp <- (pca$sdev^2) / sum(pca$sdev^2)
+
+pca_df <- data.frame(
+  sample = colnames(meth_mat),
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  batch = meta2$batch
+)
+
+# If you have other covariates you want to show:
+# pca_df$age <- meta2$age
+# pca_df$tissue <- meta2$tissue
+
+# --- 5) Plot PCA coloured by batch ---
+library(ggplot2)
+
+p_pca <- ggplot(pca_df, aes(PC1, PC2, colour = batch)) +
+  geom_point(size = 3, alpha = 0.85) +
+  labs(
+    title = "PCA of methylation profiles",
+    x = paste0("PC1 (", round(100 * var_exp[1], 1), "%)"),
+    y = paste0("PC2 (", round(100 * var_exp[2], 1), "%)")
+  ) +
+  theme_classic()
+
+print(p_pca)
+
+# --- 6) Batch statistic: does batch explain PC1/PC2? (effect size + p) ---
+m1 <- summary(lm(PC1 ~ batch, data = pca_df))
+m2 <- summary(lm(PC2 ~ batch, data = pca_df))
+
+cat("\nBatch ~ PC1: R^2 =", signif(m1$r.squared, 3),
+    " | p =", signif(pf(m1$fstatistic[1], m1$fstatistic[2], m1$fstatistic[3], lower.tail = FALSE), 3), "\n")
+
+cat("Batch ~ PC2: R^2 =", signif(m2$r.squared, 3),
+    " | p =", signif(pf(m2$fstatistic[1], m2$fstatistic[2], m2$fstatistic[3], lower.tail = FALSE), 3), "\n")
+
+```
+
+#### ------------------------------
+#### ------------------------------
+
+
+# Loading in matrixes from all models 
+```{r f}
+
+suppressPackageStartupMessages({
+library(readr)
+library(tidyr)
+library(ggbeeswarm)
+library(ggh4x)
+library(ggpubr)
+library(dplyr)
+library(ggrepel)
+library(lme4)
+library(broom)
+library(glmnet)
+library(purrr)
+  library(here)
+})
+
+output_directory <- here("results/Graphs")
+dir.create(output_directory, recursive = TRUE, showWarnings = FALSE)
+
+
+
+cpg_data<- read.csv(here("data/Metrics_all_models/final_merged/results_cpg_final.csv"))
+
+metrics_data <- read.csv(here("data/Metrics_all_models/final_merged/results_metrics_final.csv"))
+
+predicted_data <- read.csv(here("data/Metrics_all_models/final_merged/results_predicted_final.csv"))
+
+## -------- Define fuctions ---------- ##
+clean_up_data <- function(df) {
+  df %>% 
+    filter(dataset == "Validation") %>%
+    filter(!model %in% c("old_elastic_net", "old_lasso")) %>%  # remove old models  in case sill present 
+    dplyr::mutate(
+      rsq_threshold = dplyr::recode(
+        rsq_threshold,
+        "nofilter" = "r2_nofilter",
+        "0.05" = "r2_0.05",
+        "0.1"  = "r2_0.1",
+        "0.2"  = "r2_0.2",
+        "0.3"  = "r2_0.3"
+      ),
+      rsq_threshold = factor(
+        rsq_threshold,
+        levels = c("r2_nofilter","r2_0.05","r2_0.1","r2_0.2","r2_0.3")
+      ),
+      filter = factor(
+        filter,
+        levels = c("nofilter","min5", "min10", "min20")
+      ),
+      unique_model_id = paste(cpg_grouping,model_id, sep = "_")
+    )  %>%
+  mutate(
+    organ = case_when(
+      organ == "Fin_clip_caudal" ~"Caudal_Fin" ,
+      organ == "All_organs"~"Multi_organ"  ,
+     TRUE ~ organ
+    )
+  )
+
+
+}
+
+get_shapes <- function(n) {
+  # valid ggplot shapes: 0–25 
+  # choose a clean subset
+  shapes <- c(0:14)   # 15 visually distinct shapes
+  
+  if (n > length(shapes)) {
+    stop("Need more shapes than available")
+  }
+  
+  shapes[1:n]
+}
+
+
+
+## ------------- Clean up data 
+
+cpg_data_validation       <- clean_up_data(cpg_data)
+metrics_data_validation   <- clean_up_data(metrics_data)
+predicted_data_validation <- clean_up_data(predicted_data)
+
+
+## -- clean up probe column 
+cpg_data_validation_long<- cpg_data_validation %>%
+    tidyr::separate_rows(selected_cpgs, sep = ";") %>% # split cpg list 
+  dplyr::mutate(selected_cpgs = trimws(selected_cpgs)) %>% # Ensure no whitespace issues
+    mutate(selected_cpgs = gsub("chr","",selected_cpgs))%>%
+  separate(selected_cpgs, c("chr","start","end"), remove = F, sep = ":")  %>%# split probe id to get chromosome metadtaa 
+  dplyr::mutate(chr = trimws(chr),
+                chr = factor(chr, levels = c(1:25)))
+
+
+colnames(predicted_data_validation) <-
+  sub("^data\\.", "", colnames(predicted_data_validation))
+```
+
+## quick look at data 
+```{r}
+library(readxl)
+
+metadata <- read_excel(here("data/final_metadata_uniqueID_new.xlsx")) %>%
+  filter(Clock == "multitissue")
+
+wide_tab <- with(
+  metadata,
+  table(Age, interaction(Sex, Organ, sep = "_"))
+)
+
+
+```
+
+

@@ -1,0 +1,207 @@
+---
+title: "Cross-Tissue analysis - part 4: delta_age_trajectories"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 06 / Aim 2: Cross-Tissue Ageing Biology - part 4 of 10
+=================================================================
+Inter-tissue epigenetic age acceleration (delta-age) patterns: overall delta-age by tissue, by CpG grouping, and trends across chronological age.
+
+Depends on objects created by part 3 (03_best_model_ranking_significance.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part4}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+# Inter-organ delta age patterns 
+
+A slope < 0 - epigenetic age is slowing down compared to chronological age
+A R2 
+
+```{r i}
+suppressPackageStartupMessages({
+library(lme4)
+library(car)
+})
+
+best_predicted <- predicted_data_validation %>%
+  #filter(unique_model_id %in% best$unique_model_id) %>%
+  mutate(
+    DeltaAge = predicted_age - Age
+  )
+
+
+model <- lmer(DeltaAge ~ organ + (1 | individual_fish_ID), data = best_predicted)
+
+summary(model)
+Anova(model, type = "III")
+emmeans(model, pairwise ~ organ)
+
+organ_trends <- best_predicted %>%
+  group_by(organ) %>%
+  do(tidy(lm(DeltaAge ~ Age, data = .))) %>%
+  filter(term == "Age") %>%
+  dplyr::rename(slope = estimate, p_value = p.value) %>%
+  left_join(
+    best_predicted %>%
+      group_by(organ) %>%
+      do(glance(lm(DeltaAge ~ Age, data = .))) %>%
+      dplyr::select(organ, r.squared),
+    by = "organ"
+  )
+
+
+# Ensure organ_trends is ungrouped
+organ_trends <- organ_trends %>% ungroup()
+
+n_organs <- nrow(organ_trends)
+
+
+# overall delta 
+p <-best_predicted %>%
+  ggplot(aes(x = organ, y = DeltaAge, colour = organ)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar",
+               width = 0.15, position = position_dodge(0.8)) +
+  stat_summary(fun = mean, geom = "point",
+               size = 2, position = position_dodge(0.8)) +
+  labs(
+    x = "",
+    y = expression(Delta~Age),
+    colour = ""
+  ) +
+  scale_colour_manual(values = master_pal) +
+  plot_theme +
+  theme(legend.position = "bottom",
+        axis.text.x =  element_text(angle=20, hjust =1)) 
+
+
+signif_data <- get_signif_per_group(
+  df = best_predicted,
+  y_var = "DeltaAge",
+  x_var = "organ",
+  group_var = "organ"
+)
+
+# Add dynamic significance results if they exist.
+if (!is.null(signif_data) && nrow(signif_data) > 0) {
+  signif_data$y.position <- signif_data$y.position
+
+  p <- p + stat_pvalue_manual(
+    signif_data,
+    label = "label",
+    tip.length = 0.0001,
+    hide.ns = FALSE,
+    size = 4
+  )
+}
+
+p 
+delta_age_organs <- p
+ggsave(paste0(output_directory,"/deltaAge_summarysummary.png"),
+       delta_age_organs,
+       height = 6, 
+       width = 7, 
+       dpi = 400)
+
+
+# overall delta - by cpg_grouping
+
+model <- lmer(DeltaAge ~ organ*cpg_grouping + (1 | individual_fish_ID), data = best_predicted)
+
+summary(model)
+Anova(model, type = "III")
+
+p <-best_predicted %>%
+  ggplot(aes(x = organ, y = DeltaAge, colour = cpg_grouping)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar",
+               width = 0.15, position = position_dodge(0.8)) +
+  stat_summary(fun = mean, geom = "point",
+               size = 2, position = position_dodge(0.8)) +
+  labs(
+    x = "",
+    y = expression(Delta~Age),
+    colour = ""
+  ) +
+  scale_colour_manual(values = master_pal) +
+
+ plot_theme 
+
+
+
+p
+
+
+ggsave(paste0(output_directory,"/deltaAge_organs_summary_cpg_grouping.png"), height = 6, width = 7, dpi = 400)
+
+
+# trend accross chronological time 
+
+
+model <- lmer(DeltaAge ~ organ*Age + (1 | individual_fish_ID), data = best_predicted)
+
+summary(model)
+Anova(model, type = "III")
+emmeans(model, pairwise ~ organ*Age)
+# Assign top-right stacked positions
+y_range <- range(best_predicted$DeltaAge, na.rm = TRUE)
+delta   <- diff(y_range)
+
+organ_trends <- organ_trends %>%
+  arrange(desc(slope)) %>%
+  mutate(
+    label = sprintf("slope = %.2f, R² = %.2f", slope, r.squared),
+    x_pos = max(best_predicted$Age, na.rm = TRUE) * 0.95,
+    y_pos = seq(
+      from = y_range[2] - 0.45 * delta,   # start 20% down from max
+      to   = y_range[2] - 0.50* delta,   # end 50% down from max
+      length.out = n_organs
+    )
+  )
+
+
+organ_trends
+p <-best_predicted %>%
+  ggplot(aes(x = as.numeric(Age), y = DeltaAge, colour = organ, fill = organ, group = organ)) +
+  geom_smooth(method = "lm", alpha = 0.2, se = TRUE, size = 0.9) +
+  geom_text(
+    data = organ_trends,
+    aes(x = x_pos, y = y_pos, label = label, colour = organ),
+    hjust = 1, size = 3.5, fontface = "italic",
+    show.legend = F
+  ) +
+  labs(
+    x = "Chronological Age",
+    y = expression(Delta~Age),
+    colour = "",
+    fill = ""
+  ) +
+  scale_colour_manual(values = master_pal) +
+  scale_fill_manual(values = master_pal) +
+
+  theme(
+    legend.position = "bottom"
+  ) +
+  plot_theme 
+p 
+delta_age_organs_x_age <- p
+ggsave(paste0(output_directory,"/deltaAge_chro_organ_separate_models.png"),
+       delta_age_organs_x_age,
+       height = 6, 
+       width = 5, 
+       dpi = 400)
+
+```
+
+# ~
+

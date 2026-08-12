@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the associated paper (details to be added on acceptance)."
+title: "Methodological determinants and tissue-specific mosaicism of epigenetic ageing in zebrafish"
+type: software
+authors:
+  - family-names: "de Coriolis"
+    given-names: "Jean-Charles"
+    affiliation: "School of Biological Sciences, University of East Anglia"
+  - family-names: "Robertson"
+    given-names: "Neil A."
+    affiliation: "MRC Human Genetics Unit, Institute of Genetics and Cancer, University of Edinburgh / Mayo Clinic"
+  - family-names: "Olova"
+    given-names: "Nelly"
+    affiliation: "MRC Human Genetics Unit, Institute of Genetics and Cancer, University of Edinburgh"
+  - family-names: "Sanghvi"
+    given-names: "Rashesh"
+  - family-names: "Chandra"
+    given-names: "Tamir"
+    affiliation: "MRC Human Genetics Unit, Institute of Genetics and Cancer, University of Edinburgh / Mayo Clinic"
+  - family-names: "Maklakov"
+    given-names: "Alexei A."
+    affiliation: "School of Biological Sciences, University of East Anglia"
+  - family-names: "Rahbari"
+    given-names: "Raheleh"
+    affiliation: "Wellcome Trust Sanger Institute"
+  - family-names: "Immler"
+    given-names: "Simone"
+    affiliation: "School of Biological Sciences, University of East Anglia"
+repository-code: "https://github.com/REPLACE_ME/epigenetic-clock-zebrafish"
+license: MIT
+date-released: "2026-08-11"
+keywords:
+  - epigenetic clock
+  - DNA methylation
+  - ageing
+  - zebrafish
+  - RRBS

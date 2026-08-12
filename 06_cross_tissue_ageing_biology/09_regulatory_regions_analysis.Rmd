@@ -1,0 +1,413 @@
+---
+title: "Cross-Tissue analysis - part 9: regulatory_regions_analysis"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 06 / Aim 2: Cross-Tissue Ageing Biology - part 9 of 10
+=================================================================
+Regulatory-region (promoter/gene-body/TE) methylation summary and chromosome-4-specific CpG distribution, using output from 04_regulatory_region_mapping/.
+
+Depends on objects created by part 8 (08_dynamic_network_pca_entropy.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part9}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+# Regulatory Regions 
+## Cleaning up dataframe
+```{r}
+suppressPackageStartupMessages({
+  library(readr)
+  library(ggplot2)
+  library(ggh4x)
+  library(ggpubr)
+  library(dplyr)
+  library(ggbeeswarm)
+  library(tidyr)
+  })
+
+RR_df<- read_csv("data/Regulatory_Regions/final_RR_df1.csv") %>%
+  mutate(
+         Sex = case_when(
+           Sex == "M"~ "Male",
+           Sex == "F" ~ "Female"
+         ),
+         Organ = case_when(
+           Organ == "Fin_clip_caudal" ~ "Caudal_Fin",
+           Organ == "All_organs" ~ "Multi_organ",
+           TRUE ~ Organ
+         ))
+
+RR_df <- RR_df%>%
+  filter( !is.na(label),                     # remove rows with label NA
+    !(label == "TE" & is.na(class))    # remove rows where label is TE and class is NA # remove any NA labels
+  ) %>%
+  separate(Probe, c("chr","start","end"), sep = ":", remove = F) %>%
+  mutate(chr = factor(chr, levels=c(1:25))) 
+
+RR_df <- RR_df %>%
+  filter(ID != "overlap_all")
+
+# clean up dataframe for single organs 
+RR_df <- RR_df%>%
+  filter(
+    (ID == "Brain" & Organ == "Brain") |
+    (ID == "Intestines" & Organ == "Intestines") |
+    (ID == "Caudal_Fin" & Organ == "Caudal_Fin") |
+    !(ID %in% c("Brain", "Intestines", "Caudal_Fin"))  # keep all others as-is
+  )
+
+
+```
+
+### Tisue specific selected CpGs 
+```{r}
+
+
+df_single<- RR_df %>%
+  filter(ID != "overlap_single")
+
+
+#-----------------------------------
+# Colour palette (master_pal already defined)
+#-----------------------------------
+# Ensure master_pal includes Organs, Sex, and labels as in your previous code
+
+#-----------------------------------
+# 1 Regulatory region methylation per Organ
+#-----------------------------------
+p.label_organ <- df_single %>%
+  filter(!is.na(label)) %>%
+  ggplot(aes(x = label, y = methylation, colour = ID, group = ID)) +
+  stat_summary(fun = mean, geom = "line", size = 0.3, colour="#999999", position=position_dodge(0.9)) +
+  stat_summary(fun = mean, geom = "point", size=1.5, position=position_dodge(0.9)) +
+  stat_summary(fun.data = mean_se, geom="errorbar", width=0.15, size=0.7, position=position_dodge(0.9)) +
+  scale_colour_manual(values = master_pal) +
+  labs(y="Methylation (%)", x="", colour="") +
+  plot_theme +
+  theme(axis.text.x = element_text(angle=20, hjust=1))
+p.label_organ
+#-----------------------------------
+# 2 Sex-specific methylation patterns
+#-----------------------------------
+p.sex <- df_single %>%
+  filter(!is.na(label), !is.na(Sex)) %>%
+  ggplot(aes(x = label, y = methylation, colour = Sex, group = Sex)) +
+  stat_summary(fun=mean, geom="line", size=0.3, colour="#999999", position=position_dodge(0.9)) +
+  stat_summary(fun=mean, geom="point", size=1.5, position=position_dodge(0.9)) +
+  stat_summary(fun.data=mean_se, geom="errorbar", width=0.15, size=0.7, position=position_dodge(0.9)) +
+  scale_colour_manual(values = master_pal) +
+  labs(y="Methylation (%)", x="", colour="Sex") +
+  plot_theme +
+  theme(axis.text.x = element_text(angle=20, hjust=1))+
+  facet_nested(~ ID )
+p.sex
+
+#-----------------------------------
+# 3 Age-related methylation trends per label
+#-----------------------------------
+
+p.age <- df_single %>%
+
+  ggplot(aes(x = Age, y = methylation, colour = ID, group=ID)) +
+  stat_summary(fun=mean, geom="line", size=0.3, colour="#999999", position=position_dodge(0.9)) +
+  stat_summary(fun=mean, geom="point", size=1.5, position=position_dodge(0.9)) +
+  stat_summary(fun.data=mean_se, geom="errorbar", width=0.15, size=0.7, position=position_dodge(0.9)) +
+  scale_colour_manual(values=master_pal) +
+  labs(y="Methylation (%)", x="Age (binned)", colour="Organ") +
+  plot_theme +
+  facet_nested(~label, scales="free_y")
+p.age
+
+#-----------------------------------
+# 4 TE class 
+#-----------------------------------
+
+p.TE<- df_single %>%
+filter(label=="TE") %>%
+  ggplot(aes(x = class, y = methylation, colour = ID, group=ID)) +
+  stat_summary(fun=mean, geom="line", size=0.3, colour="#999999", position=position_dodge(0.9)) +
+  stat_summary(fun=mean, geom="point", size=1.5, position=position_dodge(0.9)) +
+  stat_summary(fun.data=mean_se, geom="errorbar", width=0.15, size=0.7, position=position_dodge(0.9)) +
+  scale_colour_manual(values=master_pal) +
+  labs(y="Methylation (%)", x="", colour="TE Class") +
+  plot_theme 
+p.TE
+
+#-----------------------------------
+# 5 CpG-level variability per label × Organ
+#-----------------------------------
+p.variability <- df_single %>%
+  filter(!is.na(label)) %>%
+  group_by(ID,  label) %>%
+  summarise(methylation_sd = sd(methylation, na.rm=TRUE), .groups="drop") %>%
+  ggplot(aes(x = label, y = methylation_sd, colour = ID, group = ID)) +
+  stat_summary(fun=mean, geom="line", size=0.3, colour="#999999", position=position_dodge(0.9)) +
+  stat_summary(fun=mean, geom="point", size=1.5, position=position_dodge(0.9)) +
+  stat_summary(fun.data=mean_se, geom="errorbar", width=0.15, size=0.7, position=position_dodge(0.9)) +
+  scale_colour_manual(values = master_pal) +
+  labs(y="Methylation SD", x="", colour="Organ") +
+  plot_theme 
+p.variability
+
+```
+
+### Overlaping soma selected CpGs
+```{r}
+suppressPackageStartupMessages({
+  library(readr)
+  library(ggplot2)
+  library(ggh4x)
+  library(ggpubr)
+  library(dplyr)
+  library(ggbeeswarm)
+  library(tidyr)
+  })
+
+df_overlap <- RR_df %>%
+  filter(ID == "overlap_single")
+
+p.count <- RR_df %>%
+    ggplot(aes(x = label, fill = label))+
+    geom_bar(stat = "count") +
+    scale_fill_manual(values = master_pal)+
+  labs(y = "Total Count", x = "", fill = "")+
+  theme_classic2(base_size = 16)+
+  plot_theme+
+  theme(axis.text.x = element_text(angle=20,hjust=1),
+        legend.position = "bottom")+
+    facet_nested(~ ID)
+p.count
+
+p.organ.overall <-  RR_df %>%
+    ggplot(aes(x = label, y = methylation, colour = Organ, group = Organ)) +
+  stat_summary(fun = mean, geom = "line", position = position_dodge(0.9), size = 0.2, colour = "#999999") +
+  stat_summary(fun = mean, geom = "point", size = 1.3, position = position_dodge(0.9)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1, position = position_dodge(0.9)) +
+  scale_colour_manual(values = master_pal) +
+  theme_classic2() + 
+    labs(y = "Methylation (%)", x = "", colour = "") +
+  plot_theme+
+    facet_nested(~ ID)
+
+p.organ.overall
+
+p.organ.age <- RR_df %>%
+    ggplot(aes(x = Age, y = methylation, colour = Organ, group = Organ)) +
+  stat_summary(fun = mean, geom = "line", position = position_dodge(0.9), size = 0.1, colour = "#999999") +
+  stat_summary(fun = mean, geom = "point", size = 1.3, position = position_dodge(0.9)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1, position = position_dodge(0.9)) +
+  scale_colour_manual(values = master_pal) +
+  theme_classic2() + 
+    labs(y = "Methylation (%)", x = "", colour = "") +
+  plot_theme+ 
+  facet_nested(~label)
+p.organ.age
+
+p.sex <- RR_df %>%
+    ggplot(aes(x = label, y = methylation, colour = Sex, shape = Organ, group = Organ)) +
+  stat_summary(fun = mean, geom = "line", position = position_dodge(0.9)) +
+  stat_summary(fun = mean, geom = "point", size = 1.3, position = position_dodge(0.9)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1, position = position_dodge(0.9)) +
+  scale_colour_manual(values = master_pal) +
+  theme_classic2() + 
+    labs(y = "Methylation (%)", x = "", colour = "") +
+  plot_theme
+p.sex
+
+p.chr <- RR_df %>%
+    ggplot(aes(x = chr, y = methylation, colour = factor(label), group = label)) +
+  stat_summary(fun = mean, geom = "line",size = 0.2, colour = "#999999", position = position_dodge(0.9)) +
+  stat_summary(fun = mean, geom = "point", size = 1.3, position = position_dodge(0.9)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1, position = position_dodge(0.9)) +
+  scale_colour_manual(values = master_pal) +
+  theme_classic2() + 
+    labs(y = "Methylation (%)", x = "", colour = "") +
+  plot_theme+ 
+  facet_nested(~Organ)
+p.chr
+
+
+p.TE.chr <- RR_df %>%
+  filter(label=="TE") %>%
+    ggplot(aes(x = class, y = methylation, colour = Treatment, group = Treatment)) +
+  stat_summary(fun = mean, geom = "line",size = 0.2, colour = "#999999", position = position_dodge(0.9)) +
+  stat_summary(fun = mean, geom = "point", size = 1.3, position = position_dodge(0.9)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1, position = position_dodge(0.9)) +
+  scale_colour_manual(values = master_pal) +
+  theme_classic2() + 
+    labs(y = "Methylation (%)", x = "", colour = "") +
+  plot_theme
+p.TE.chr
+
+
+```
+
+
+# ==================
+# ==================
+
+#Chromosome 4
+```{r}
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(ggh4x)
+  library(ggpubr)
+  library(tidyverse)
+})
+
+
+methylation_best_cpgs1<- methylation_best_cpgs %>%
+ 
+  separate(tile, c("chr","start","end"), sep=":", remove=F ) %>%
+  mutate(chr = factor(chr, levels = c(1:25)),
+         start=as.numeric(start),
+         end=as.numeric(end)) %>%
+  dplyr::rename( "Probe" ="tile" ) %>%
+  left_join(Final_all_cpgs_df, by =  "Probe") %>%
+   filter(ID != "overlap_all") %>%
+  mutate(
+         ID = factor(ID)) %>%
+  filter(# make sure each ID has correct organs 
+    !(ID %in% c("Brain", "Caudal_Fin", "Intestines")) |
+      Organ == ID
+  )
+
+
+chr_counts <- methylation_best_cpgs1 %>%
+  distinct(ID, chr, Probe) %>%
+  dplyr::count(ID, chr)
+
+# Number of cpgs pe chromosome
+
+
+enrichment_pal <- c("#0072B2", "beige", "#D55E00")
+
+p <- chr_counts %>%
+  filter(ID != "overlap_all") %>%
+  ggplot(aes(x = chr, y = ID, fill = n)) +
+  geom_tile() +
+  scale_fill_gradientn(
+    colours = enrichment_pal
+  ) +
+  labs(fill = "CpG count", x = "Chromosome", y = "") +
+  plot_theme
+
+p
+
+
+dir.create(paste0(output_directory,"/Chromosome_4"), recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = paste0(output_directory, "/Chromosome_4/best_cpg_groupings_chromosome_number.png"),
+  plot =p,
+  height = 6,
+  width = 12,
+  dpi = 400
+)
+
+# pobability of proes on chomosome 4 between IDS 
+ methylation_best_cpgs1 %>%
+  distinct(ID, chr, Probe) %>%
+  dplyr::count(ID, chr) %>%
+  group_by(ID) %>%
+  mutate(prop = n / sum(n)) %>%
+  filter(chr == 4)
+
+ # methylation of chr 4 comapred to others 
+p <- methylation_best_cpgs1 %>%
+  mutate(chr_group = ifelse(chr == 4, "chr4", "other")) %>%
+  ggplot(aes(x = methylation, fill = chr_group)) +
+  geom_density(alpha = 0.4) +
+  scale_fill_manual(values =  okabe_ito)+
+  facet_wrap(~ ID) +
+  labs(fill = "")+
+  plot_theme +
+  theme(legend.position = "bottom")
+p
+
+ggsave(
+  filename = paste0(output_directory, "/Chromosome_4/best_cpg_groupings_chromosome_4_meth_density.png"),
+  plot =p,
+  height = 6,
+  width = 9,
+  dpi = 400
+)
+
+# where are the CpGs on chromosome 4 
+
+ p <- methylation_best_cpgs1 %>%
+  filter(chr == 4) %>%
+  ggplot(aes(x = factor(start), y = methylation, colour = ID)) +
+  geom_point(alpha = 0.3, size = 0.6) +
+  facet_wrap(~ ID, ncol = 1) +
+  plot_theme+
+  
+  scale_colour_manual(values =  okabe_ito_palette(5))+
+  labs(colour = "", x = "Start Position")+
+  theme(axis.text.x = element_text(angle=25,hjust=1),
+        legend.position = "none")
+
+ p
+ 
+ 
+
+ggsave(
+  filename = paste0(output_directory, "/Chromosome_4/best_cpg_groupings_chromosome_4_position.png"),
+  plot =p,
+  height = 9,
+  width = 6,
+  dpi = 400
+)
+
+## 
+
+chr4_centromere <- 25975534
+
+p<-methylation_best_cpgs1 %>%
+  filter(chr == "4") %>%
+  ggplot(aes(
+    x = start / 1e6,          # scale to Mb
+    ymin = 0,                  # fixed vertical line for each ID
+    ymax = 1,                  # can be adjusted for stacking
+    colour = methylation
+  )) +
+  geom_linerange(aes(ymin = as.numeric(ID)-0.4, ymax = as.numeric(ID)+0.4), alpha=0.7) +
+  geom_vline(xintercept = chr4_centromere / 1e6, linetype="dashed", colour="black") +
+   scale_colour_gradientn(
+    colours = enrichment_pal
+  ) +
+  scale_y_continuous(
+    breaks = 1:5,
+    labels = levels(factor(methylation_best_cpgs1$ID))
+  ) +
+  labs(x="Chromosome 4 position (Mb)", y=NULL) +
+  plot_theme
+
+p
+ggsave(
+  filename = paste0(output_directory, "/Chromosome_4/best_cpg_groupings_chromosome_4_position2.png"),
+  plot =p,
+  height = 6,
+  width = 9,
+  dpi = 400
+)
+
+```
+
+# ==================
+# ==================
+

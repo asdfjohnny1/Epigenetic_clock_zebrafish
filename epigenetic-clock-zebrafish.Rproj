@@ -1,0 +1,10 @@
+Version: 1.0
+
+RestartOnSourceChange: Default
+
+SaveWorkspace: No
+LoadWorkspace: Default
+Encoding: UTF-8
+
+RnwWeave: Sweave
+LaTeX: pdfLaTeX

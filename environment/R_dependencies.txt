@@ -1,0 +1,39 @@
+# R dependencies for this repository
+#
+# R version used during development: 4.5.x (see sessionInfo() in your own
+# environment; not pinned here - add a renv.lock if you want fully
+# reproducible package versions, see note at the bottom).
+#
+# Install with, e.g.:
+#   install.packages(cran_packages)
+#   BiocManager::install(bioc_packages)
+
+cran_packages <- c(
+  "broom", "car", "caret", "cluster", "corrplot", "data.table", "dbscan",
+  "doParallel", "dotwhisker", "dplyr", "emmeans", "ggbeeswarm", "ggfortify",
+  "ggh4x", "ggplot2", "ggplotify", "ggpubr", "ggrepel", "glmmTMB", "glmnet",
+  "glmnetUtils", "gridExtra", "here", "lme4", "matrixStats", "patchwork",
+  "performance", "pheatmap", "progress", "progressr", "purrr", "RColorBrewer",
+  "readr", "readxl", "rlang", "rstatix", "scales", "shades", "shadowtext",
+  "sjPlot", "stringr", "tibble", "tidyr", "tidyverse", "vegan"
+)
+
+bioc_packages <- c(
+  "biomaRt", "BSgenome.Drerio.UCSC.danRer11", "clusterProfiler",
+  "GenomicFeatures", "GenomicRanges", "gprofiler2", "IRanges", "methylKit",
+  "missMethyl", "org.Dr.eg.db", "TxDb.Drerio.UCSC.danRer11.refGene"
+)
+
+# Non-R dependencies used by the shell/HPC pipeline stages (01, 02, 04):
+#   - Trim Galore v0.6.5, Bismark v0.25.1 (RRBS trimming/alignment/methylation
+#     calling; see the manuscript Methods for the full read-processing pipeline
+#     upstream of this repository)
+#   - bedtools (regulatory-region CpG mapping, stage 04)
+#   - gawk (regulatory-region BED file construction, stage 04)
+#   - SLURM (all *.sh scripts are written as SLURM batch/array jobs; adapt the
+#     #SBATCH directives, or the job submission entirely, for other schedulers)
+
+# For fully pinned, reproducible package *versions* (not just names), consider
+# generating a renv.lock file from your own working environment:
+#   install.packages("renv"); renv::init(); renv::snapshot()
+# and committing the resulting renv.lock alongside this file.

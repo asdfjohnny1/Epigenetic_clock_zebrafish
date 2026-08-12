@@ -1,0 +1,410 @@
+---
+title: "Clock Determinants analysis - part 5: manuscript_figures_supplementary"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 05 / Aim 1: Clock Design Benchmarking - part 5 of 5
+=================================================================
+Builds the supplementary figures: multi-metric comparison (MAE vs R2 vs performance score), preprocessing-threshold robustness, cross-tissue rank stability, and the tile-window-size (epse) uncertainty-vs-complexity analysis.
+
+Depends on objects created by part 4 (04_manuscript_figures_main.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part5}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+## Figure 2 
+
+```{r}
+suppressPackageStartupMessages({
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(patchwork)
+library(lme4)
+library(sjPlot)
+})
+# =============================================================================
+# SUPPLEMENTARY FIGURES: Additional Methods Analyses
+# 4 panels covering key literature gaps
+# =============================================================================
+metrics_scores <- metrics_data_validation %>%
+  group_by(cpg_grouping, model, organ) %>%
+  mutate(
+    # Rescale MAE (invert so that lower MAE → higher score)
+    mae_score = scales::rescale(-mae),
+
+    # Rescale R² to 0–1, where higher values → higher score
+    r2_score = scales::rescale(r_squared_value)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # Composite continuous performance metric:
+    # Higher values represent better-performing clocks
+    performance_score = mae_score + r2_score,
+
+    # Convert design factors to categorical variables
+    cpg_grouping = factor(cpg_grouping),
+    tile_methode = factor(tile_methode),
+    model = factor(model),
+    organ = factor(organ),
+    rsq_threshold = factor(rsq_threshold),
+    filter = factor(filter),
+
+    # Scale numeric hyperparameters (important for mixed-model stability)
+    epse_scaled = scale(epse)
+  ) 
+
+merged_metrics_scores <- metrics_scores%>%
+  left_join(
+    cpg_data_validation_long %>% 
+      dplyr::select(unique_model_id, num_selected_cpg, num_candidate_cpg,selected_cpgs, chr,start,end),
+    by = "unique_model_id"
+  )
+
+# =============================================================================
+# FIGURE 4A: Multi-metric Comparison (MAE vs R² vs Performance Score)
+# =============================================================================
+
+p4a <- metrics_scores %>%
+  ggplot(aes(x = r_squared_value, y = mae_score, colour = cpg_grouping)) +
+  geom_point(alpha = 0.2, size = 1.5) +
+  geom_smooth(method = "lm", se = T, size = 0.8) +
+  geom_smooth(method = "lm", se = T, size = 0.8, colour ="black") +
+  scale_colour_manual(values = master_pal) +
+  labs(x = expression(R^2), y = "Scaled Mean Average Error (MAE)", colour = "Method",
+       title = "A. Correlation vs Error Trade-off") +
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold"),
+    legend.position = "bottom")
+
+p4a_alt <- metrics_scores %>%
+  ggplot(aes(x = performance_score, y = mae_score, colour = cpg_grouping)) +
+  geom_point(alpha = 0.2, size = 1.5) +
+  geom_smooth(method = "lm", se =T, size = 0.8) +
+  scale_colour_manual(values = master_pal) +
+  labs(x = "Performance Score", y = "Scaled Mean Average Error (MAE)", colour = "",
+       title = "Performance vs Error") +
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold"),
+    legend.position = "bottom")
+
+p4a + p4a_alt
+
+# =============================================================================
+# FIGURE 4B: Preprocessing Robustness (rsq_threshold sensitivity)
+# =============================================================================
+metrics_scores1 <- metrics_scores %>%
+    mutate(
+        rsq_thr_num = case_when(
+            rsq_threshold == "r2_nofilter" ~ 0,
+            TRUE ~ as.numeric(sub("r2_", "", as.character(rsq_threshold)))
+        ),
+        filter_num =  case_when(
+            filter == "nofilter" ~ 0,
+            TRUE ~ as.numeric(sub("min", "", as.character(filter)))
+        )
+    )
+
+slopes_threshold <- merged_metrics_scores %>%
+  mutate(sel_cpg = num_selected_cpg) %>%
+  group_by(organ, rsq_threshold) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  # Also compute mean performance per threshold
+  left_join(metrics_scores %>% 
+              group_by(organ, rsq_threshold) %>%
+              summarise(mean_perf = mean(performance_score), .groups = "drop"),
+            by = c("organ", "rsq_threshold"))
+
+p4b <- ggplot(metrics_scores1, aes(x = rsq_thr_num, y = performance_score, colour = organ)) +
+  geom_jitter( alpha = 0.2, size = 1.5) +
+  geom_smooth(method = "lm", se = TRUE, size = 1) +
+  labs(x = "R-Squared Threshold", y = "Performance Score",
+       colour = "", title = "B. Filtering Threshold Sensitivity") +
+  scale_colour_manual(values = master_pal)+
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold")
+  )
+
+
+# =============================================================================
+# FIGURE 4C&D: Model Stability Across Organs (Rank Consistency)
+# =============================================================================
+
+# Compute model ranks per organ
+model_ranks <- metrics_scores %>%
+  group_by(organ) %>%
+  mutate(rank_perf = rank(-performance_score)) %>%
+  group_by( cpg_grouping,model,rsq_threshold, filter,epse ) %>%
+  summarise(
+    mean_rank = mean(rank_perf),
+    rank_sd = sd(rank_perf),
+    n_organs = n()
+  )
+
+p4c <- ggplot(model_ranks, aes(x = mean_rank, y = rank_sd, 
+                              colour = cpg_grouping)) +
+  geom_point(alpha = 0.7, size = 3) +
+  geom_vline(xintercept = median(model_ranks$mean_rank), linetype = "dashed") +
+  geom_hline(yintercept = median(model_ranks$rank_sd), linetype = "dashed") +
+  scale_colour_manual(values = master_pal) +
+  scale_size_continuous(range = c(1, 4), name = "# Organs") +
+  labs(x = "Mean Rank Across Organs", y = "Rank Variability",
+       colour = "CpG Grouping", title = "C. Cross-Organ Stability") +
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold")
+  ) +
+  coord_cartesian(xlim = c(0, max(model_ranks$mean_rank, na.rm = TRUE)))
+
+model_ranks1 <- metrics_scores %>%
+  group_by(cpg_grouping) %>%
+  mutate(rank_perf = rank(-performance_score)) %>%
+  group_by( organ,model,rsq_threshold, filter,epse ) %>%
+  summarise(
+    mean_rank = mean(rank_perf),
+    rank_sd = sd(rank_perf),
+    n_organs = n()
+  )
+
+p4d <- ggplot(model_ranks1, aes(x = mean_rank, y = rank_sd, 
+                              colour = organ)) +
+  geom_point(alpha = 0.7, size = 3) +
+  geom_vline(xintercept = median(model_ranks1$mean_rank), linetype = "dashed") +
+  geom_hline(yintercept = median(model_ranks1$rank_sd), linetype = "dashed") +
+  scale_colour_manual(values = master_pal) +
+  scale_size_continuous(range = c(1, 4), name = "# Organs") +
+  labs(x = "Mean Rank Across CpG groups", y = "Rank Variability",
+       colour = "Organ", title = "D. Cross-CpG grouping Stability") +
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold")
+  ) +
+  coord_cartesian(xlim = c(0, max(model_ranks$mean_rank, na.rm = TRUE)))
+# =============================================================================
+# COMBINED SUPPLEMENTARY FIGURE 4
+# =============================================================================
+
+fig4 <- (p4a + theme(legend.position="none") |(p4b+guides(colour="none",fill="none")) ) / ((p4c ) | p4d) + 
+  plot_layout(guides = "collect") 
+
+print(fig4)
+ggsave("results/final_manuscript_figures/manuscript_complete_figure2.png", fig4, width = 12, height = 10, dpi = 400)
+```
+
+### Statistical Analysis 
+```{r}
+
+# Panel A - Correlation vs Error Trade-off
+# global correlation
+cor_A_r2_mae <- cor.test(metrics_scores$r_squared_value,
+                         metrics_scores$mae_score,
+                         method = "pearson")
+
+# per method (cpg_grouping)
+slopes_A <- metrics_scores %>%
+    group_by(cpg_grouping) %>%
+    do({
+        fit <- lm(mae_score ~ r_squared_value, data = .)
+        broom::tidy(fit) %>% filter(term == "r_squared_value")
+    })
+
+
+# Panel B - Correlation vs Error Trade-off
+slopes_B <- merged_metrics_scores %>%
+    mutate(sel_cpg = num_selected_cpg) %>%
+    group_by(organ) %>%
+    do({
+        dat <- .
+        fit <- lmer(
+            performance_score ~ sel_cpg + num_candidate_cpg +
+                (1|selected_cpgs) + (1|chr),
+            data = dat,
+            REML = FALSE
+        )
+        broom.mixed::tidy(fit, effects = "fixed", conf.int = FALSE)
+    }) %>%
+    ungroup() %>%
+    filter(term == "sel_cpg") %>%
+    mutate(
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE)
+    )
+
+    
+sum(slopes_B$p_value < 0.05)
+# 
+
+# Panel C - Filtering Sensitivity (R² threshold robustness)
+slopes_C <- metrics_scores1 %>%
+    group_by(organ) %>%
+    do({
+        dat <- .
+        fit <- lmer(
+            performance_score ~ rsq_thr_num  +
+                (1|cpg_grouping) + (1|tile_methode)+ (1|model)+ (1|filter),
+            data = dat,
+            REML = FALSE
+        )
+        broom.mixed::tidy(fit, effects = "fixed", conf.int = FALSE)
+    }) %>%
+    ungroup() %>%
+    filter(term == "rsq_thr_num") %>%
+    mutate(
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE)
+    )
+delta_filter <- metrics_scores1 %>%
+    group_by(organ) %>%
+    summarise(delta = max(performance_score) - min(performance_score))
+
+# Panel D - Cross-Organ Stability (Rank variability)
+
+# Compute model ranks per organ
+model_ranks <- metrics_scores %>%
+  group_by(organ) %>%
+  mutate(rank_perf = rank(-performance_score)) %>%
+  group_by( cpg_grouping,model,rsq_threshold, filter,epse ) %>%
+  summarise(
+    mean_rank = mean(rank_perf),
+    rank_sd = sd(rank_perf),
+    n_organs = n()
+  )
+
+# Panel D - Cross-Organ Stability (Rank variability)
+med_mean <- median(model_ranks$mean_rank, na.rm = TRUE)
+med_sd   <- median(model_ranks$rank_sd, na.rm = TRUE)
+
+model_ranks_summary <- model_ranks %>%
+  mutate(
+    stability_class = case_when(
+      mean_rank < med_mean & rank_sd < med_sd ~ "High-performing stable",
+      mean_rank < med_mean & rank_sd >= med_sd ~ "High-performing unstable",
+      mean_rank >= med_mean & rank_sd < med_sd ~ "Low-performing stable",
+      TRUE ~ "Low-performing unstable"
+    )
+  )
+
+table(model_ranks_summary$stability_class)
+
+# Summarise counts of stability classes by method
+
+
+method_summary_percent <- method_summary %>%
+  rowwise() %>%
+  mutate(total = sum(c_across(`High-performing stable`:`Low-performing unstable`))) %>%
+  mutate(across(`High-performing stable`:`Low-performing unstable`, ~ . / total * 100))
+method_summary_percent
+
+#####
+# Compute model ranks per cpg grouping
+model_ranks <- metrics_scores %>%
+  group_by(cpg_grouping) %>%
+  mutate(rank_perf = rank(-performance_score)) %>%
+  group_by( organ,model,rsq_threshold, filter,epse ) %>%
+  summarise(
+    mean_rank = mean(rank_perf),
+    rank_sd = sd(rank_perf),
+    n_organs = n()
+  )
+
+# Panel D - Cross-Organ Stability (Rank variability)
+med_mean <- median(model_ranks$mean_rank, na.rm = TRUE)
+med_sd   <- median(model_ranks$rank_sd, na.rm = TRUE)
+
+model_ranks_summary <- model_ranks %>%
+  mutate(
+    stability_class = case_when(
+      mean_rank < med_mean & rank_sd < med_sd ~ "High-performing stable",
+      mean_rank < med_mean & rank_sd >= med_sd ~ "High-performing unstable",
+      mean_rank >= med_mean & rank_sd < med_sd ~ "Low-performing stable",
+      TRUE ~ "Low-performing unstable"
+    )
+  )
+
+table(model_ranks_summary$stability_class)
+
+# Summarise counts of stability classes by method
+method_summary <- model_ranks_summary %>%
+  group_by(organ, stability_class) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = stability_class, values_from = n, values_fill = 0)
+
+method_summary
+
+method_summary_percent <-method_summary %>%
+  rowwise() %>%
+  mutate(total = sum(c_across(`High-performing stable`:`Low-performing unstable`))) %>%
+  mutate(across(`High-performing stable`:`Low-performing unstable`, ~ . / total * 100))
+method_summary_percent
+
+```
+
+
+## Figure 3
+```{r}
+# =============================================================================
+# FIGURE 3: Uncertainty vs Complexity (epse analysis)
+# =============================================================================
+
+p3a <- ggplot(merged_metrics_scores, aes(x = num_selected_cpg, y = epse_scaled, 
+                                 colour = cpg_grouping)) +
+  geom_jitter(alpha = 0.2, size = 1) +
+  geom_smooth(method = "lm", se = TRUE) +
+  scale_x_log10() +
+  scale_colour_manual(values = master_pal) +
+  labs(x = "Selected CpGs (log10)", y = "Scaled Tile size",
+       colour = "Method", title = "A. Uncertainty vs CpG Count") +
+  theme_classic2(base_size = 14) 
+
+p3b <- ggplot(metrics_scores, aes(x = performance_score, y = epse_scaled, 
+                                 colour = model)) +
+  geom_jitter(alpha = 0.2, size = 1) +
+  geom_smooth(method = "lm", se = TRUE) +
+  scale_colour_manual(values = master_pal) +
+  labs(x = "Performance Score", y = "Scaled ETile size",
+       colour = "Model", title = "B. Uncertainty vs Accuracy") +
+  theme_classic2(base_size = 14) 
+
+fig3 <- p3a | p3b 
+print(fig3)
+ggsave("results/final_manuscript_figures/manuscript_complete_figure3.png", fig3, width = 8.5, height = 6, dpi = 400)
+
+```

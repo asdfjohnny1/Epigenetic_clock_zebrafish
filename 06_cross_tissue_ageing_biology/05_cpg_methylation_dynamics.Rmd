@@ -1,0 +1,845 @@
+---
+title: "Cross-Tissue analysis - part 5: cpg_methylation_dynamics"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 06 / Aim 2: Cross-Tissue Ageing Biology - part 5 of 10
+=================================================================
+CpG-level methylation plots (mean methylation, age trajectories, sex differences) for both tissue-specific and cross-tissue-overlapping CpG sets, including heatmap statistics and cross-tissue delta-age correlation.
+
+Depends on objects created by part 4 (04_delta_age_trajectories.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part5}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+# CPG  Methylation plots 
+### Methylation  plot levels at organ specific repeated selected CpG 
+
+cpgs which repeatidly become selected for each organ independently 
+
+```{r j}
+
+
+# ============================================================
+# Load libraries
+# ============================================================
+suppressPackageStartupMessages({
+library(GenomicRanges)
+library(dplyr)
+library(purrr)
+library(stringr)
+})
+
+# ============================================================
+# 1. Define organ list and CpG selections
+# ============================================================
+orgs <- c("Multi_organ", "Brain", "Caudal_Fin" , "Intestines")
+
+selected_cpg <- best_selected_cpgs_organs
+
+# ============================================================
+# 2. filter methylaiton by best Cpgs 
+# ============================================================
+
+
+meth_list <- list()
+for(o in orgs){
+  cpg <- selected_cpg[[o]]
+  
+  
+  df <- methylation_best_cpgs %>%
+  filter(tile%in%  cpg)
+  
+  if(o !="Multi_organ"){
+    df <- df %>%
+      filter(Organ == o)
+  }
+  
+   df$organ_value <- o
+  
+  
+  meth_list[[o]] <- df
+}
+#============================================================
+# 3. Rbind everything together into one dataframe 
+#------------------------------------------------------------
+
+
+merged_meth <- bind_rows(meth_list )
+
+merged_meth <- merged_meth %>%
+  mutate(organ_value = factor(organ_value, levels = c("Brain","Caudal_Fin" ,"Intestines","Multi_organ")
+  ),
+                        meth=methylation
+  )
+
+# Plot
+
+p <- merged_meth %>%
+    ggplot(aes(x = organ_value, y = meth, colour = organ_value, fill = organ_value, group = organ_value)) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.01)+
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    stat_summary(fun = mean, geom = "line", size = 0.6, position = position_dodge(0.7)) +
+    labs(x = "", y = "Mean Methylation", colour = "", fill = "", title = "Mean Methylation per organ") +
+    scale_colour_manual(values = master_pal) +
+    scale_fill_manual(values = master_pal) +
+  
+    theme(
+        legend.position = "bottom",
+    ) +
+  plot_theme  +
+    scale_y_continuous(
+        breaks = seq(0, 100, 10),
+        labels = function(x) paste0(x, "%")
+    )
+
+# Compute significance for CpG groupings dynamically (if available).
+signif_data <- get_signif_per_group(
+  df = merged_meth,
+  y_var = "meth",
+  x_var = "organ_value",
+  group_var = "organ_value",
+  step_value = 7
+)
+
+
+# Add dynamic significance results if they exist.
+if (!is.null(signif_data) && nrow(signif_data) > 0) {
+  signif_data$y.position <- signif_data$y.position + 5
+  
+  p <- p + stat_pvalue_manual(
+    signif_data,
+    label = "label",
+    tip.length = 0.007,
+    hide.ns = FALSE,
+    size = 6
+  )
+}
+p
+methylation_org_specific_organs  <- p
+
+ggsave(
+  filename = paste0(output_directory, "/Methylation_cpg_best_models_organ.png"),
+  plot = methylation_org_specific_organs ,
+  height = 7,
+  width = 6,
+  dpi = 400
+)
+
+## methyaltiona cross chronological time 
+
+p <- merged_meth %>%
+    ggplot(aes(x = Age, y = meth, colour = organ_value, fill = organ_value, group = organ_value)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+  
+    stat_summary(fun = mean, geom = "line", size = 0.2, position = position_dodge(0.7), colour = "#999999") +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    labs(x = "Chronological Age", y = "Mean Methylation", colour = "", fill = "") +
+    scale_colour_manual(values = master_pal) +
+    scale_fill_manual(values = master_pal) +
+  
+    theme(legend.position = "bottom"
+    )  +
+  plot_theme +
+    scale_y_continuous(
+        breaks = seq(0, 100, 10),
+        labels = function(x) paste0(x, "%")
+    )
+
+
+p
+methylation_org_specific_age_x_organs <- p
+
+ggsave(
+  filename = paste0(output_directory, "//Methylation_cpg_best_models_organ_chronological_Age.png"),
+  plot = methylation_org_specific_age_x_organs,
+  height = 7,
+  width = 8,
+  dpi = 400
+)
+
+# removing lines 
+p$layers[[2]] <- NULL
+p
+methylation_org_specific_age_x_organs_without_line  <- p
+
+## methyaltiona cross Sex
+
+p <- merged_meth %>%
+    ggplot(aes(x = organ_value, y = meth, colour = Sex, fill = Sex, group = Sex)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+  
+    stat_summary(fun = mean, geom = "line", size = 0.2, position = position_dodge(0.7), colour = "#999999") +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    labs(x = "", y = "Mean Methylation", colour = "", fill = "") +
+    scale_colour_manual(values =master_pal) +
+    scale_fill_manual(values = master_pal) +
+    
+  plot_theme +
+    scale_y_continuous(
+        breaks = seq(0, 100, 10),
+        labels = function(x) paste0(x, "%")
+    )+
+  theme(axis.text.x = element_text(angle=20,hjust=1))
+
+
+p
+methylation_org_specific_sex_x_organs <- p
+
+ggsave(
+  filename = paste0(output_directory, "//Methylation_cpg_best_models_organ_Sex.png"),
+  plot = methylation_org_specific_sex_x_organs,
+  height = 7,
+  width = 6,
+  dpi = 400
+)
+
+p$layers[[2]] <- NULL
+p
+methylation_org_specific_sex_x_organs_without_line  <- p
+
+## met
+```
+
+##### Statistical analysis 
+
+```{r k}
+m <- lmer( meth ~ organ_value*Age + Sex + (1 | individual_fish_ID), data = merged_meth)
+
+summary(m)
+Anova(m)
+emmeans(m, pairwise ~ organ_value)
+```
+
+### Methylation  plot levels at selected cpgs selected in all organs
+(Brain,intestinesmfin, Multi_organ)
+cpgs which have been selected in all organs accross all models 
+
+```{r l}
+
+
+# ============================================================
+# Load libraries
+# ============================================================
+suppressPackageStartupMessages({
+library(GenomicRanges)
+library(dplyr)
+library(purrr)
+library(stringr)
+})
+
+# ============================================================
+# 1. Define organ list and CpG selections
+# ============================================================
+orgs <- c("Multi_organ", "Brain", "Caudal_Fin" , "Intestines")
+
+selected_cpg <- best_cpg_overlap_all
+
+# ============================================================
+# 2. filter methylaiton by best Cpgs 
+# ============================================================
+
+
+  df <- methylation_best_cpgs %>%
+  filter(tile%in%  selected_cpg)
+  
+
+#============================================================
+# 3. Rbind everything together into one dataframe 
+#------------------------------------------------------------
+
+
+merged_meth <- df
+
+merged_meth <- merged_meth %>%
+  mutate(Organ= factor(Organ, levels = c("Brain","Caudal_Fin" ,"Intestines")
+  ),
+                        meth=methylation
+  )
+
+# Plot
+
+p <- merged_meth %>%
+    ggplot(aes(x = Organ, y = meth, colour = Organ, fill = Organ, group = Organ)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    stat_summary(fun = mean, geom = "line", size = 0.6, position = position_dodge(0.7)) +
+    labs(x = "", y = "Mean Methylation", colour = "", fill = "") +
+    scale_colour_manual(values = master_pal) +
+    scale_fill_manual(values = master_pal) +
+  
+    theme(legend.position = "bottom"
+    ) +
+  plot_theme  +
+    scale_y_continuous(
+        breaks = seq(0, 100, 2),
+        labels = function(x) paste0(x, "%")
+    )
+
+
+# Compute significance for CpG groupings dynamically (if available).
+signif_data <- get_signif_per_group(
+  df = merged_meth,
+  y_var = "meth",
+  x_var = "Organ",
+  group_var = "Organ",
+  step_value = 2
+)
+
+
+# Add dynamic significance results if they exist.
+if (!is.null(signif_data) && nrow(signif_data) > 0) {
+  signif_data$y.position <- signif_data$y.position 
+  
+  p <- p + stat_pvalue_manual(
+    signif_data,
+    label = "label",
+    tip.length = 0.0009,
+    hide.ns = FALSE,
+    size = 4
+  )
+}
+p
+
+
+ggsave(
+  filename = paste0(output_directory, "/Methylation_all_organ_universal_cpg.png"),
+  plot = p,
+  height = 5,
+  width = 8,
+  dpi = 400
+)
+
+## methyaltiona cross chronological time 
+p <- merged_meth %>%
+    ggplot(aes(x = Age, y = meth, colour = Organ, fill = Organ, group = Organ)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+  
+    stat_summary(fun = mean, geom = "line", size = 0.2, position = position_dodge(0.7), colour = "#999999") +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    labs(x = "", y = "Mean Methylation", colour = "", fill = "") +
+    scale_colour_manual(values = master_pal) +
+    scale_fill_manual(values = master_pal) +
+  
+    theme(legend.position = "bottom"
+    )  +
+  plot_theme +
+    scale_y_continuous(
+        breaks = seq(0, 100, 2),
+        labels = function(x) paste0(x, "%")
+    )
+
+
+p
+
+ggsave(
+  filename = paste0(output_directory, "/Methylation_all_organ_universal_cpg_chronological_Age.png"),
+  plot = p,
+  height = 5,
+  width = 8,
+  dpi = 400
+)
+
+
+## methyaltiona cross Sex
+
+
+p <- merged_meth %>%
+    ggplot(aes(x = Organ, y = meth, colour = Sex, fill = Sex, group = Sex)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+  
+    stat_summary(fun = mean, geom = "line", size = 0.2, position = position_dodge(0.7), colour = "#999999") +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    labs(x = "", y = "Mean Methylation", colour = "", fill = "") +
+    scale_colour_manual(values =master_pal) +
+    scale_fill_manual(values = master_pal) +
+    
+  plot_theme +
+    scale_y_continuous(
+        breaks = seq(0, 100, 2),
+        labels = function(x) paste0(x, "%")
+    )
+
+
+p
+
+
+ggsave(
+  filename = paste0(output_directory, "/Methylation_all_organ_universal_cpg_Sex.png"),
+  plot = p,
+  height = 5,
+  width = 8,
+  dpi = 400
+)
+```
+
+#### Heatmap
+
+```{r m}
+suppressPackageStartupMessages({
+  
+
+library(pheatmap)
+})
+
+heat_df <-merged_meth %>%
+  group_by(tile, Age, Organ) %>%
+  summarise(
+    mean_meth = mean(meth, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Age = factor(Age, levels = sort(unique(Age))),
+    col_id = paste(Organ, Age, sep = "_")
+  ) %>%
+  dplyr::select(tile, col_id, mean_meth)
+
+
+heat_mat <- heat_df %>%
+  pivot_wider(names_from = col_id, values_from = mean_meth) %>%
+  column_to_rownames("tile") %>%
+  as.matrix()
+
+# remove cpgs with 0 variance - will become NA in scaling - not ideal 
+keep <- apply(heat_mat, 1, sd, na.rm = TRUE) > 0
+heat_mat_filt <- heat_mat[keep, ]
+
+heat_mat_scaled <- t(scale(t(heat_mat_filt)))
+
+
+annotation_col <- data.frame(
+  Organ = sub("_[0-9]+$", "", colnames(heat_mat_scaled)),
+  Age = sub(".*_", "", colnames(heat_mat_scaled))
+)
+
+rownames(annotation_col) <- colnames(heat_mat_scaled)
+
+# Define colors for annotations
+ann_colors <- list(
+  Organ = c(Brain = "#E69F00" , Caudal_Fin ="#50B562", Intestines= "#8E643B",Multi_organ ="#000000" ),  
+  Age = c("3" = "#E69F00", "5" = "#8AAC94", "6" ="#3EAEC8", "8" ="#07A07D","10" = "#82C458", "12" = "#C4CF56", "14" = "#2B869D", "16" = "#606861",
+          "18" = "#D4600F", "22" = "#000000") 
+)
+p <- tryCatch(
+  {
+    pheatmap(
+      heat_mat_scaled,
+      cluster_rows = TRUE,
+      cluster_cols = TRUE,
+      annotation_col = annotation_col,
+      annotation_colors = ann_colors,
+      show_rownames = FALSE,
+      fontsize_col = 12,
+      angle_col = 45,
+      color = colorRampPalette(c("#2166AC", "white", "#B2182B"))(100),
+      main = "CpG-level methylation trajectories across age and Organ"
+    )
+  },
+  error = function(e) {
+    message("Heatmap generation failed: ", conditionMessage(e))
+    return(NULL)
+  }
+)
+
+if (!is.null(p)) {
+  ggsave(
+  filename = paste0(output_directory, "/Heatmap_methylation_all_organ_universal_cpg_organ_age.png"),
+  plot = p,
+  height = 7,
+  width = 8,
+  dpi = 400
+)
+}
+
+
+
+  ####
+  
+  
+CpG_slopes <- merged_meth %>%
+  mutate(Age = as.numeric(Age)) %>%
+  group_by(tile, Organ) %>%
+  summarise(
+    slope = coef(lm(meth ~ Age))[2],
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = Organ, values_from = slope)
+
+slope_mat <- as.matrix(CpG_slopes[, -1])
+rownames(slope_mat) <- CpG_slopes$tile
+
+p <- tryCatch(
+  {
+pheatmap(
+  slope_mat,
+  cluster_rows = TRUE,
+  cluster_cols = F,
+  angle_col = 45,
+  color = colorRampPalette(c("#2166AC", "white", "#B2182B"))(100),
+  main = "Age-associated methylation slopes per CpG"
+) 
+
+  },
+  error = function(e) {
+    message("Heatmap generation failed: ", conditionMessage(e))
+    return(NULL)
+  }
+)
+
+if (!is.null(p)) {
+  ggsave(
+  filename = paste0(output_directory, "/Heatmap_methylation_all_organ_universal_cpg_treatment_summary.png"),
+  plot = p,
+  height = 13,
+  width = 8,
+  dpi = 400
+)
+}
+  
+
+
+  
+  # viewing top tiles 
+  # Compute slope difference
+CpG_diff <- CpG_slopes %>%
+  mutate(
+    slope_diff = Brain - Caudal_Fin - Intestines  # difference in age-associated slope
+  ) %>%
+  arrange(desc(abs(slope_diff)))  # rank by absolute difference
+
+# View top divergent tiles
+top_CpGs <- CpG_diff %>%
+  slice_head(n = 20)  # top 20 tiles with largest treatment effect
+
+top_CpGs
+```
+
+##### Statistical analysis 
+
+```{r m1}
+m <- lmer( meth ~ Organ*Age + Sex + (1 | individual_fish_ID), data = merged_meth)
+
+summary(m)
+Anova(m)
+emmeans(m, pairwise ~ Organ)
+```
+
+
+### Methylation  plot levels at selected cpgs selected in all singletissue  somatic organs
+( brain, intestines, flin clip  )
+
+cpgs which have been selected in all single tissue organs accross all models 
+```{r n}
+
+
+# ============================================================
+# Load libraries
+# ============================================================
+suppressPackageStartupMessages({
+library(GenomicRanges)
+library(dplyr)
+library(purrr)
+library(stringr)
+})
+
+
+# ============================================================
+# 1. Define organ list and CpG selections
+# ============================================================
+orgs <- c( "Brain", "Caudal_Fin" , "Intestines")
+
+selected_cpg <- best_cpg_overlap_single
+
+# ============================================================
+# 2. filter methylaiton by best Cpgs 
+# ============================================================
+
+  df <- methylation_best_cpgs %>%
+  filter(tile%in%  selected_cpg)
+  
+
+#============================================================
+# 3. Rbind everything together into one dataframe 
+#------------------------------------------------------------
+
+
+merged_meth <- df
+
+merged_meth <- merged_meth %>%
+  mutate(Organ = factor(Organ, levels = c("Brain","Caudal_Fin" ,"Intestines","Multi_organ")
+  ),
+                        meth=methylation
+  )
+
+
+# Plot
+
+p <- merged_meth %>%
+    ggplot(aes(x = Organ, y = meth, colour = Organ, fill = Organ, group = Organ)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    stat_summary(fun = mean, geom = "line", size = 0.6, position = position_dodge(0.7)) +
+    labs(x = "", y = "Mean Methylation", colour = "", fill = "", title = "Mean Methylation per organ") +
+    scale_colour_manual(values = master_pal) +
+    scale_fill_manual(values = master_pal) +
+  
+    theme(legend.position = "bottom"
+    ) +
+  plot_theme  +
+    scale_y_continuous(
+        breaks = seq(0, 100, 2),
+        labels = function(x) paste0(x, "%")
+    )
+
+
+# Compute significance for CpG groupings dynamically (if available).
+signif_data <- get_signif_per_group(
+  df = merged_meth,
+  y_var = "meth",
+  x_var = "Organ",
+  group_var = "Organ",
+  step_value = 2
+)
+
+
+# Add dynamic significance results if they exist.
+if (!is.null(signif_data) && nrow(signif_data) > 0) {
+  signif_data$y.position <- signif_data$y.position 
+  
+  p <- p + stat_pvalue_manual(
+    signif_data,
+    label = "label",
+    tip.length = 0.001,
+    hide.ns = FALSE,
+    size = 4
+  )
+}
+p
+
+methylation_overlap_soma <- p
+
+ggsave(
+  filename = paste0(output_directory, "/Methylation_single_organ_universal_cpg.png"),
+  plot = methylation_overlap_soma,
+  height = 7,
+  width = 6,
+  dpi = 400
+)
+
+## methyaltiona cross chronological time 
+
+p <- merged_meth %>%
+    ggplot(aes(x = Age, y = meth, colour = Organ, fill = Organ, group = Organ)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+  
+    stat_summary(fun = mean, geom = "line", size = 0.2, position = position_dodge(0.7), colour = "#999999") +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    labs( y = "Mean Methylation", colour = "", fill = "", x = "Chronological Age") +
+    scale_colour_manual(values = master_pal) +
+    scale_fill_manual(values = master_pal) +
+  
+    theme(legend.position = "bottom"
+    )  +
+  plot_theme +
+    scale_y_continuous(
+        breaks = seq(0, 100, 5),
+        labels = function(x) paste0(x, "%")
+    )
+
+
+p
+methylation_overlap_soma_age_x_organs <- p
+
+ggsave(
+  filename = paste0(output_directory, "/Methylation_single_organ_universal_cpg_chronological_Age.png"),
+  plot = methylation_overlap_soma_age_x_organs,
+  height = 5,
+  width = 8,
+  dpi = 400
+)
+
+# removing Lines form plot 
+p$layers[[2]] <- NULL
+p
+methylation_overlap_soma_age_x_organs_without_line  <- p
+
+## methyaltiona cross Sex
+
+p <- merged_meth %>%
+    ggplot(aes(x = Organ, y = meth, colour = Sex, fill = Sex, group = Sex)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, size = 0.6,
+                 alpha = 0.5, position = position_dodge(0.7)) +
+  
+    stat_summary(fun = mean, geom = "line", size = 0.2, position = position_dodge(0.7), colour = "#999999") +
+    stat_summary(fun = mean, geom = "point", size = 2, position = position_dodge(0.7)) +
+    labs(x = "", y = "Mean Methylation", colour = "", fill = "") +
+    scale_colour_manual(values =master_pal) +
+    scale_fill_manual(values = master_pal) +
+    
+  plot_theme +
+    scale_y_continuous(
+        breaks = seq(0, 100, 2),
+        labels = function(x) paste0(x, "%")
+    ) +
+  theme(axis.text.x = element_text(angle=20, hjust=1))+
+  theme(legend.position = "bottom")
+
+
+p
+methylation_overlap_soma_sex_x_organs <- p
+
+ggsave(
+  filename = paste0(output_directory, "/Methylation_single_organ_universal_cpg_Sex.png"),
+  plot = methylation_overlap_soma_sex_x_organs,
+  height = 6,
+  width = 7,
+  dpi = 400
+)
+
+# removing Lines form plot 
+p$layers[[2]] <- NULL
+p
+methylation_overlap_soma_sex_x_organs_without_line  <- p
+
+```
+#### Heatmap
+
+```{r o}
+suppressPackageStartupMessages({
+  
+
+library(pheatmap)
+})
+
+heat_df <-merged_meth %>%
+  group_by(tile, Age, Organ) %>%
+  summarise(
+    mean_meth = mean(meth, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Age = factor(Age, levels = sort(unique(Age))),
+    col_id = paste(Organ, Age, sep = "_")
+  ) %>%
+  dplyr::select(tile, col_id, mean_meth)
+
+
+heat_mat <- heat_df %>%
+  pivot_wider(names_from = col_id, values_from = mean_meth) %>%
+  column_to_rownames("tile") %>%
+  as.matrix()
+
+# remove cpgs with 0 variance - will become NA in scaling - not ideal 
+keep <- apply(heat_mat, 1, sd, na.rm = TRUE) > 0
+heat_mat_filt <- heat_mat[keep, ]
+
+heat_mat_scaled <- t(scale(t(heat_mat)))
+
+
+annotation_col <- data.frame(
+  Organ = sub("_[0-9]+$", "", colnames(heat_mat_scaled)),
+  Age = sub(".*_", "", colnames(heat_mat_scaled))
+)
+
+rownames(annotation_col) <- colnames(heat_mat_scaled)
+
+# Define colors for annotations
+ann_colors <- list(
+  Organ = c(Brain = "#E69F00" , Caudal_Fin ="#50B562", Intestines= "#8E643B"),  
+  Age = c("3" = "#E69F00", "5" = "#8AAC94", "6" ="#3EAEC8", "8" ="#07A07D","10" = "#82C458", "12" = "#C4CF56", "14" = "#2B869D", "16" = "#606861",
+          "18" = "#D4600F", "22" = "#000000") 
+)
+p<- pheatmap(
+  heat_mat_scaled,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  annotation_col = annotation_col,
+  annotation_colors = ann_colors,
+  show_rownames = FALSE,
+  fontsize_col = 12,
+  angle_col = 45,           # <- rotates column labels
+  color = colorRampPalette(c("#2166AC", "white", "#B2182B"))(100),
+  main = "CpG-level methylation trajectories across age and Organ"
+)
+p 
+ heatmap_overlap_soma  <- p
+
+ ggsave(
+  filename = paste0(output_directory, "/Heatmap_methylation_single_organ_universal_cpg_organ_age.png"),
+  plot =  heatmap_overlap_soma ,
+  height = 7,
+  width = 8,
+  dpi = 400
+)
+  ####
+  
+  
+CpG_slopes <- merged_meth %>%
+  mutate(Age = as.numeric(Age)) %>%
+  group_by(tile, Organ) %>%
+  summarise(
+    slope = coef(lm(meth ~ Age))[2],
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = Organ, values_from = slope)
+
+slope_mat <- as.matrix(CpG_slopes[, -1])
+rownames(slope_mat) <- CpG_slopes$tile
+
+p<- pheatmap(
+  slope_mat,
+  cluster_rows = TRUE,
+  cluster_cols = F,
+  angle_col = 45,
+  color = colorRampPalette(c("#2166AC", "white", "#B2182B"))(100),
+  main = "Age-associated methylation slopes per CpG"
+) 
+
+  p 
+  summary_heatmap_overlap_soma  <-p 
+  
+  ggsave(
+  filename = paste0(output_directory, "/Heatmap_methylation_single_organ_universal_cpg_treatment_summary.png"),
+  plot =  summary_heatmap_overlap_soma ,
+  height = 8,
+  width = 6,
+  dpi = 400
+)
+
+  
+  # viewing top tiles 
+  # Compute slope difference
+CpG_diff <- CpG_slopes %>%
+  mutate(
+    slope_diff = Brain - Caudal_Fin - Intestines  # difference in age-associated slope
+  ) %>%
+  arrange(desc(abs(slope_diff)))  # rank by absolute difference
+
+# View top divergent tiles
+top_CpGs <- CpG_diff %>%
+  slice_head(n = 20)  # top 20 tiles with largest treatment effect
+
+top_CpGs
+```
+

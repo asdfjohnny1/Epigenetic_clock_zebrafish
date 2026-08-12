@@ -1,0 +1,256 @@
+---
+title: "Determinants_of_epigenetic_clocks"
+author: "Jean-Charles de coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r 1}
+knitr::opts_chunk$set(
+echo = TRUE,     # show code
+warning = F,  # show warnings if you want
+message = TRUE,  # show messages if you want
+error = FALSE    # do NOT display errors in output
+)
+
+
+```
+
+# Colour Palettes
+```{r 2}
+okabe_ito <- c(
+  "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+  "#0072B2", "#D55E00", "#CC79A7", "#000000"
+)
+okabe_ito_palette <- colorRampPalette(okabe_ito)
+
+master_pal <- c(
+  ## =========================
+  ## Treatments
+  ## =========================
+  GLF = "#E69F00",
+  GLC = "#0072B2",
+  
+  ## =========================
+  ## Data representation
+  ## =========================
+  Cluster = "#4A8D8A",  
+  Point   = "#D79A4A",  
+  Tile    = "#C46E7A",  
+
+  
+  ## =========================
+  ## Organs (qualitative set)
+  ## =========================
+  Brain       = "#D89000", 
+  Caudal_Fin  = "#50B562",  
+  Intestines  = "#8E643B",  
+  Multi_organ = "#404040",   
+  
+  
+  ## =========================
+  ## Exposure / state
+  ## =========================
+  Low     =  "#17836A",
+  Control = "#D95F02",
+  High    = "#7570B3",
+  
+  ## =========================
+  ## Sex
+  ## =========================
+  Male   = "#335C81",
+  Female = "#F47DB8",
+  
+  ## =========================
+  ## Regularisation / model class
+  ## =========================
+  Elastic_net = "#E6AB02",
+  Lasso       = "#66A61E",
+  
+  ## =========================
+  ## Transposable element classes
+  ## =========================
+  LINE = "#F0A3FF",
+  DNA  = "#A6761D",
+  LTR  = "#8C8C8C"
+)
+
+
+```
+
+# Functions 
+
+```{r}
+
+library(dplyr)
+library(rlang)
+library(rstatix)
+library(purrr)
+
+get_signif_per_group <- function(df, y_var, x_var = Treatment, group_var = organ) {
+  yq <- enquo(y_var)
+  xq <- enquo(x_var)
+  gq <- enquo(group_var)
+  
+  y_name <- as_string(quo_get_expr(yq))
+  x_name <- as_string(quo_get_expr(xq))
+  g_name <- as_string(quo_get_expr(gq))
+  
+  se_fun <- function(v) sd(v, na.rm = TRUE) / sqrt(sum(!is.na(v)))
+  
+  df %>%
+    group_by(!!gq) %>%
+    group_modify(~{
+      # if x has <2 groups → empty tibble
+      if (n_distinct(.x[[x_name]]) < 2) return(tibble())
+      
+      # ANOVA
+      frm <- as.formula(paste0(y_name, " ~ ", x_name))
+      aov_res <- tryCatch(.x %>% anova_test(formula = frm), error = function(e) NULL)
+      if (is.null(aov_res)) return(tibble())
+      
+      pval <- round(aov_res$p[1], 2)
+      if (is.na(pval) || pval > 0.05) return(tibble())
+      
+      # tukey
+      tukey_res <- tryCatch(.x %>% tukey_hsd(formula = frm), error = function(e) NULL)
+      if (is.null(tukey_res) || nrow(tukey_res) == 0) return(tibble())
+      
+      tukey_res <- tukey_res %>%
+        mutate(
+          p.adj = round(p.adj, 2),
+          label = case_when(
+            p.adj <= 0.001 ~ "***",
+            p.adj <= 0.01  ~ "**",
+            p.adj <= 0.06  ~ "*",
+            TRUE ~ "ns"
+          )
+        ) %>%
+        filter(label != "ns")
+      
+      if (nrow(tukey_res) == 0) return(tibble())
+      
+      # vertical positions
+      y_max <- .x %>%
+        group_by_at(x_name) %>%
+        summarise(m = mean(.data[[y_name]], na.rm = TRUE) +
+                    1.5 * se_fun(.data[[y_name]]),
+                  .groups = "drop") %>%
+        pull(m) %>%
+        max(na.rm = TRUE)
+      
+      step <- 2 * se_fun(.x[[y_name]])
+      group_value <- unique(.x[[g_name]])[1]
+      
+      tukey_res %>%
+        mutate(
+          y.position = y_max + (row_number() - 1) * step,
+          group = as.character(group_value)
+        )
+    }) %>%
+    ungroup()
+}
+
+```
+
+
+# ------------------------------
+# ------------------------------
+
+# Loading in matrixes from all models 
+```{r 5}
+
+suppressPackageStartupMessages({
+library(readr)
+library(tidyr)
+library(ggbeeswarm)
+library(ggh4x)
+library(ggpubr)
+library(dplyr)
+library(ggrepel)
+library(lme4)
+library(broom)
+library(glmnet)
+library(purrr)
+  library(here)
+})
+
+output_directory <- here("results/Graphs")
+dir.create(output_directory, recursive = TRUE, showWarnings = FALSE)
+
+
+
+cpg_data<- read.csv(here("data/Metrics_all_models/final_merged/results_cpg_final.csv"))
+
+metrics_data <- read.csv(here("data/Metrics_all_models/final_merged/results_metrics_final.csv"))
+
+predicted_data <- read.csv(here("data/Metrics_all_models/final_merged/results_predicted_final.csv"))
+
+## -------- Define fuctions ---------- ##
+clean_up_data <- function(df) {
+  df %>% 
+    filter(dataset == "Validation") %>%
+    filter(!model %in% c("old_elastic_net", "old_lasso")) %>%  # remove old models  in case sill present 
+    dplyr::mutate(
+      rsq_threshold = dplyr::recode(
+        rsq_threshold,
+        "nofilter" = "r2_nofilter",
+        "0.05" = "r2_0.05",
+        "0.1"  = "r2_0.1",
+        "0.2"  = "r2_0.2",
+        "0.3"  = "r2_0.3"
+      ),
+      rsq_threshold = factor(
+        rsq_threshold,
+        levels = c("r2_nofilter","r2_0.05","r2_0.1","r2_0.2","r2_0.3")
+      ),
+      filter = factor(
+        filter,
+        levels = c("nofilter","min5", "min10", "min20")
+      ),
+      unique_model_id = paste(cpg_grouping,model_id, sep = "_")
+    )  %>%
+  mutate(
+    organ = case_when(
+      organ == "Fin_clip_caudal"~"Caudal_Fin" ,
+      organ == "All_organs"~"Multi_organ"  ,
+     TRUE ~ organ
+    )
+  )
+
+
+}
+
+get_shapes <- function(n) {
+  # valid ggplot shapes: 0–25 
+  # choose a clean subset
+  shapes <- c(0:14)   # 15 visually distinct shapes
+  
+  if (n > length(shapes)) {
+    stop("Need more shapes than available")
+  }
+  
+  shapes[1:n]
+}
+
+
+
+## ------------- Clean up data 
+
+cpg_data_validation       <- clean_up_data(cpg_data)
+metrics_data_validation   <- clean_up_data(metrics_data)
+predicted_data_validation <- clean_up_data(predicted_data)
+
+
+## -- clean up probe column 
+cpg_data_validation_long<- cpg_data_validation %>%
+    tidyr::separate_rows(selected_cpgs, sep = ";") %>% # split cpg list 
+  dplyr::mutate(selected_cpgs = trimws(selected_cpgs)) %>% # Ensure no whitespace issues
+    mutate(selected_cpgs = gsub("chr","",selected_cpgs))%>%
+  separate(selected_cpgs, c("chr","start","end"), remove = F, sep = ":")  %>%# split probe id to get chromosome metadtaa 
+  dplyr::mutate(chr = trimws(chr),
+                chr = factor(chr, levels = c(1:25)))
+```
+

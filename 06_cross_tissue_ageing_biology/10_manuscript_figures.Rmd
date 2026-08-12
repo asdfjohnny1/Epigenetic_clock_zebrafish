@@ -1,0 +1,198 @@
+---
+title: "Cross-Tissue analysis - part 10: manuscript_figures"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 06 / Aim 2: Cross-Tissue Ageing Biology - part 10 of 10
+=================================================================
+Assembles the final manuscript figures 1-5 (clock performance, delta-age, tissue-specific CpG methylation, overlapping-CpG methylation, system-level divergence) and supplementary figures 1-3.
+
+Depends on objects created by part 9 (09_regulatory_regions_analysis.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part10}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+# Final manuscript figures 
+
+## Making_final_directory
+```{r}
+
+dir.create(here("results/final_maniscript_figures/"), recursive = TRUE, showWarnings = FALSE)
+
+```
+
+## Figure 1
+```{r}
+suppressPackageStartupMessages({
+  
+library(patchwork)
+library(ggplot2)
+library(ggplotify)
+})
+# ==========================
+# MAIN FIGURE 1: Epigenetic Clock Performance
+# ==========================
+# Panel A: Performance by organs
+# Panel B: Performance by CpG grouping
+main_fig1 <- (performance_organs |
+  performance_cpg_grouping) + 
+  plot_layout(axes="collect")+
+  plot_annotation(tag_levels = "A")
+main_fig1
+
+ggsave("results/final_maniscript_figures/Fig1_main_performance.png", main_fig1, width = 12, height = 6, dpi = 400)
+```
+
+## Figure 2
+
+```{r}
+# ==========================
+# MAIN FIGURE 2: Delta age
+# ==========================
+# Panel A: Delta age by organ
+# Panel B: Delta age by organ × age
+main_fig2 <- (delta_age_organs   + 
+  (delta_age_organs_x_age + guides(colour="none", fill = "none")))  + 
+  plot_layout(guides = "collect",
+              axes="collect") +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+main_fig2
+
+ggsave("results/final_maniscript_figures/Fig2_main_delta_age.png", main_fig2, width = 12, height = 6, dpi = 400)
+```
+
+## Figure 3
+
+```{r}
+# ==========================
+# MAIN FIGURE 3: Organ-specific CpG methylation
+# ==========================
+# Panel A: Mean methylation by organ
+# Panel B: Methylation drift
+# Panel C: Stochastic drift
+main_fig3 <- ( ((methylation_org_specific_organs | 
+  methylation_drift_org_specific )+ guides(colour="none", fill = "none")) / 
+ ( methylation_density_org_specific + guides(colour="none", fill = "none") | 
+  stochastic_drift_org_specific + guides(colour="none", fill = "none")) ) +
+  
+  plot_layout(guides = "collect") +
+  
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+main_fig3
+
+ggsave("results/final_maniscript_figures/Fig3_main_org_specific.png", main_fig3, width = 13, height = 13, dpi = 400)
+```
+
+## Figure 4
+
+```{r}
+# ==========================
+# MAIN FIGURE 4: Overlapping somatic CpGs
+# ==========================
+# Panel A: Heatmap rows CpGs × organ × age
+# Panel B: Methylation drift
+# PAnel C : Methyaltion density
+# Panel E: Stochastic drift
+
+p5<- as.ggplot(heatmap_overlap_soma)
+p6 <- as.ggplot(summary_heatmap_overlap_soma)
+pp <- (p5 | p6) +plot_layout(widths = c(1.3, 0.7))
+
+main_fig4 <- ((( ((methylation_overlap_soma | 
+  methylation_drift_overlap_soma)+ guides(colour="none", fill = "none")) / 
+ ( methylation_density_overlap_soma + guides(colour="none", fill = "none") | 
+  stochastic_drift_overlap_soma + guides(colour="none", fill = "none")) ) +  plot_layout(guides = "collect") )/p5 ) +
+  
+  plot_layout(heights = c(0.6,0.6,1.8))+
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+main_fig4
+
+
+ggsave("results/final_maniscript_figures/Fig4_main_overlap_soma.png", main_fig4, width = 13, height = 17, dpi = 400)
+```
+
+
+## Figure 5
+
+```{r}
+# ==========================
+# MAIN FIGURE 5: System-level divergence
+# ==========================
+# Panel A: PCA organ-level
+# Panel B: Cross-tissue delta discordance
+# Panel C: Entropy plot
+main_fig5 <- pca_org_level+ guides(colour="none", fill = "none")  + 
+  cross_tissue_delta+ guides(colour="none", fill = "none")  + 
+  entropy_plot  +
+  plot_layout(guides = "collect")+
+  plot_annotation(tag_levels = "A")&
+  theme(legend.position = "bottom")
+main_fig5
+
+ggsave("results/final_maniscript_figures/Fig5_main_system_level.png", main_fig5, width = 15, height = 8, dpi = 400)
+```
+
+## Supplementary Figure 2
+
+```{r}
+# ==========================
+# SUPPLEMENTARY FIGURE 1: CpG performance combinations
+# ==========================
+supp_fig1 <- performance_organs_x_cpg_grouping +
+  plot_annotation(tag_levels = "A")
+supp_fig1
+
+ggsave("results/final_maniscript_figures/SuppFig1_performance_combinations.png", supp_fig1, width = 8, height = 6, dpi = 400)
+```
+
+## Supplementary Figure 2
+
+
+```{r}
+# ==========================
+# SUPPLEMENTARY FIGURE 2: Organ-specific methylation interactions
+# ==========================
+supp_fig2 <- (methylation_org_specific_sex_x_organs_without_line | 
+  methylation_org_specific_age_x_organs)+
+  plot_layout(guides = "collect",
+              axes="collect") +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+supp_fig2
+
+ggsave("results/final_maniscript_figures/SuppFig2_org_specific_interactions.png", supp_fig2, width = 10, height = 6, dpi = 400)
+```
+
+## Supplementary Figure 2
+
+```{r}
+# ==========================
+# SUPPLEMENTARY FIGURE 3: Overlapping CpGs comprehensive anaussis
+# ==========================
+supp_fig3 <-(( methylation_overlap_soma_sex_x_organs_without_line /
+  methylation_overlap_soma_age_x_organs) |
+  (pcgt_overlap_soma /
+  genomic_context_overlap_soma) |
+  
+  functional_profiling_overlap_soma )+
+
+  plot_annotation(tag_levels = "A")
+supp_fig3
+
+ggsave("results/final_maniscript_figures/SuppFig3_overlap_soma_full.png", supp_fig3, width = 20, height = 12, dpi = 400)
+```

@@ -1,0 +1,542 @@
+---
+title: "Clock Determinants analysis - part 4: manuscript_figures_main"
+author: "Jean-Charles de Coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 05 / Aim 1: Clock Design Benchmarking - part 4 of 5
+=================================================================
+Builds the three main manuscript figures for the clock design benchmarking aim: design space & performance, CpG count scaling, global design effects.
+
+Depends on objects created by part 3 (03_determinants_of_performance.Rmd) having already been run in the same R
+session (or knitted first, with its environment preserved) - this file does not reload raw data from scratch.
+=================================================================
+-->
+
+```{r config_part4}
+# Set the root directory of this project (edit here, or export
+# EPICLOCK_ROOT before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+```
+
+# Manuscript plots 
+
+## Figure 1
+```{r}
+suppressPackageStartupMessages({
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(patchwork)
+library(lme4)
+library(sjPlot)
+})
+# =============================================================================
+# MANUSCRIPT FIGURES: 3-Panel Set for Clock Design Benchmarking
+# Figure 1: Design space & performance
+# Figure 2: CpG count scaling  
+# Figure 3: Global design effects
+# =============================================================================
+metrics_scores <- metrics_data_validation %>%
+  group_by(cpg_grouping, model, organ) %>%
+  mutate(
+    # Rescale MAE (invert so that lower MAE → higher score)
+    mae_score = scales::rescale(-mae),
+
+    # Rescale R² to 0–1, where higher values → higher score
+    r2_score = scales::rescale(r_squared_value)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # Composite continuous performance metric:
+    # Higher values represent better-performing clocks
+    performance_score = mae_score + r2_score,
+
+    # Convert design factors to categorical variables
+    cpg_grouping = factor(cpg_grouping),
+    tile_methode = factor(tile_methode),
+    model = factor(model),
+    organ = factor(organ),
+    rsq_threshold = factor(rsq_threshold),
+    filter = factor(filter),
+
+    # Scale numeric hyperparameters (important for mixed-model stability)
+    epse_scaled = scale(epse)
+  )
+# --- PREP: Consistent factor levels ---
+Multi_organ <- sort(unique(metrics_scores$organ))
+all_groupings <- sort(unique(metrics_scores$cpg_grouping))
+all_models <- sort(unique(metrics_scores$model))
+
+# =============================================================================
+# FIGURE 1: Design Space & Performance
+# =============================================================================
+
+# 1A: Design space - model counts by organ × cpg_grouping
+design_space <- metrics_data_validation %>%
+  count(organ, cpg_grouping) %>%
+  mutate(
+    organ = factor(organ, levels = Multi_organ),
+    cpg_grouping = factor(cpg_grouping, levels = all_groupings)
+  )
+
+p1a <- ggplot(design_space, aes(x = cpg_grouping, y = organ, fill = n)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = n), color = "white", fontface = "bold") +
+  scale_fill_gradientn(
+    colours = c("#56B4E9", "white", "#D55E00"),
+    values = scales::rescale(c(0, 0.5, 1)),
+    name = "# Models"
+  ) +
+  labs(
+    x = "",
+    y = "",
+    title = "A. Number of models"
+  ) +
+theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold")
+  )
+# 1B : Performance by cpg_grouping
+signif_data <- get_signif_per_group(
+  df = metrics_scores,
+  y_var = "performance_score",
+  x_var = "cpg_grouping",
+  group_var = "cpg_grouping"
+)
+
+p1b <-  ggplot(
+  metrics_scores ,
+  aes(
+    y = performance_score,
+    x = cpg_grouping,
+    colour = factor(cpg_grouping),
+    group = factor(cpg_grouping)
+  )
+) +
+  stat_summary(
+    fun.data = mean_se,
+    geom = "errorbar",
+    width = 0.15,
+    position = position_dodge(0.8)
+  ) +
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    size = 2,
+    position = position_dodge(0.8)
+  ) +
+  scale_colour_manual(values = master_pal) +
+  labs(
+    title = "B. Absolute Performance",
+    x = "",
+    y = "Performance Score",
+    colour = ""
+  ) +
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold")
+  )
+
+
+# Add significance layers.
+p1b <- p1b+ stat_pvalue_manual(
+  signif_data,
+  label = "label",
+  tip.length = 0.0001,
+  hide.ns = FALSE,
+  size = 4
+)
+# 1B.1: Performance by cpg_grouping, faceted by organ
+# Repeat significance definitions (kept separate for clarity).
+  sig_data <- tibble::tribble(
+    ~organ,        ~xmin, ~xmax, ~y_position, ~annotations,
+    "Brain",         1,     3,      1.45,        "***",
+    "Brain",         2,     3,      1.50,        "**",
+    "Intestines",    1,     3,      1.21,        "***",
+    "Multi_organ",    1,     3,      1.38,        "***"
+  )
+
+  p1b.1 <-  ggplot(
+  metrics_scores ,
+  aes(
+    y = performance_score,
+    x = cpg_grouping,
+    colour = factor(cpg_grouping),
+    group = interaction(organ, factor(cpg_grouping))
+  )
+) +
+  stat_summary(
+    fun.data = mean_se,
+    geom = "errorbar",
+    width = 0.15,
+    position = position_dodge(0.8)
+  ) +
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    size = 2,
+    position = position_dodge(0.8)
+  ) +
+  scale_colour_manual(values = master_pal) +
+  labs(
+    title = "B. Absolute Performance",
+    x = "",
+    y = "Performance Score",
+    colour = ""
+  ) +
+theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold")
+  )+
+    facet_nested_wrap(~ organ, ncol = 2)
+  
+
+# Add significance layers.
+  p1b.1 <- p1b.1 +
+  geom_segment(
+    data = sig_data,
+    aes(x = xmin, xend = xmax, y = y_position, yend = y_position),
+    inherit.aes = FALSE,
+    linewidth = 0.5,
+    colour = "black"
+  ) +
+  geom_text(
+    data = sig_data,
+    aes(
+      x = (xmin + xmax) / 2,
+      y = y_position + 0.025,
+      label = annotations
+    ),
+    inherit.aes = FALSE,
+    size = 5
+  )
+
+
+
+
+fig1 <- (p1a | p1b) + 
+  plot_annotation(title = "1. Design Space & Absolute Performance") 
+print(fig1)
+ggsave(paste0(output_directory,"/fig1_design_performance.png"), fig1, width = 16, height = 8, dpi = 300)
+
+# =============================================================================
+# FIGURE 2: CpG Count Scaling
+# =============================================================================
+merged_metrics_scores <- metrics_scores %>%
+  left_join(
+    cpg_data_validation_long %>% 
+      dplyr::select(unique_model_id, num_selected_cpg, num_candidate_cpg,selected_cpgs, chr,start,end),
+    by = "unique_model_id"
+  )
+
+# 2A: Forest plot of slopes per organ (performance ~ num_selected_cpg)
+
+slopes_organ_sel  <- merged_metrics_scores %>%
+    mutate(sel_cpg = num_selected_cpg) %>%
+    group_by(organ) %>%
+    do({
+        dat <- .
+        fit <- lmer(
+            performance_score ~ sel_cpg + num_candidate_cpg +
+                (1|selected_cpgs) + (1|chr),
+            data = dat,
+            REML = FALSE
+        )
+        broom.mixed::tidy(fit, effects = "fixed", conf.int = FALSE)
+    }) %>%
+    ungroup() %>%
+    filter(term == "sel_cpg") %>%
+    mutate(
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        star = dplyr::case_when(
+            p_value < 0.001 ~ "***",
+            p_value < 0.01  ~ "**",
+            p_value < 0.05  ~ "*",
+            TRUE ~ ""
+        ),
+        organ = factor(organ, levels = Multi_organ)
+    )
+
+
+p2a <-ggplot(slopes_organ_sel, aes(x = organ, y = estimate, colour = organ)) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey70") +
+  geom_errorbar(aes(ymin = estimate - 1.96 * std.error,
+                    ymax = estimate + 1.96 * std.error),
+                width = 0.15) +
+  geom_point(size = 2.5) +
+  geom_text(
+    data = slopes_organ_sel,
+    aes(
+      x = organ,
+      y = estimate + 2.2 * std.error,
+      label = star
+    ),
+    colour = "black",
+    size = 3,
+    inherit.aes = FALSE
+  ) +
+  labs(
+    x = "",
+    y = "Δ performance per additional selected CpG",
+    colour = "",
+    title = "C. Selected CpG scaling"
+  ) +
+  scale_colour_manual(values = master_pal) +
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1) 
+  )
+
+# 2B : 
+slopes_organ_cand <- merged_metrics_scores  %>%
+  mutate(log_sel_cpg = log10(num_candidate_cpg)) %>%
+    group_by(organ) %>%
+    do({
+        dat <- .
+        fit <- lmer(
+            performance_score ~ log_sel_cpg + num_candidate_cpg +
+                (1|selected_cpgs) + (1|chr),
+            data = dat,
+            REML = FALSE
+        )
+        broom.mixed::tidy(fit, effects = "fixed", conf.int = FALSE)
+    }) %>%
+    ungroup() %>%
+    filter(term == "log_sel_cpg") %>%
+    mutate(
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        star = dplyr::case_when(
+            p_value < 0.001 ~ "***",
+            p_value < 0.01  ~ "**",
+            p_value < 0.05  ~ "*",
+            TRUE ~ ""
+        ),
+        organ = factor(organ, levels = Multi_organ)
+    )
+
+p2b <- ggplot(slopes_organ_cand, aes(x = organ, y = estimate, colour = organ)) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey70") +
+  geom_errorbar(aes(ymin = estimate - 1.96 * std.error, ymax = estimate + 1.96 * std.error), width = 0.15) +
+  geom_point(size = 2.5) +
+  geom_text(data = slopes_organ_cand,
+            aes(x = organ, 
+                y = estimate + 2.2 * std.error,  # above error bar
+                label = star),
+            colour = "black", size = 3,
+            inherit.aes = FALSE)+
+  labs(x = "", y = "Δ performance per additonal candidate CpGs", colour = "",title = "D. Candidate CpG scaling") +
+  scale_colour_manual(values = master_pal) +
+   theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1) 
+  )
+
+
+# 2C: Heatmap organ × cpg_grouping slopes
+slopes_group_organ <- merged_metrics_scores  %>%
+ mutate(sel_cpg = num_selected_cpg) %>%
+    group_by(organ, cpg_grouping) %>%
+    do({
+        dat <- .
+        fit <- lmer(
+            performance_score ~ sel_cpg + num_candidate_cpg +
+                (1|selected_cpgs) + (1|chr),
+            data = dat,
+            REML = FALSE
+        )
+        broom.mixed::tidy(fit, effects = "fixed", conf.int = FALSE)
+    }) %>%
+    ungroup() %>%
+    filter(term == "sel_cpg") %>%
+    mutate(
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        star = dplyr::case_when(
+            p_value < 0.001 ~ "***",
+            p_value < 0.01  ~ "**",
+            p_value < 0.05  ~ "*",
+            TRUE ~ ""
+        ),
+        organ = factor(organ, levels = Multi_organ)
+    )
+  
+
+p2c <- ggplot(slopes_group_organ, aes(x = cpg_grouping, y = organ, fill = estimate)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = star), size = 3, fontface = "bold") +
+  scale_fill_gradient2(low = "#56B4E9", mid = "white", high =  "#D55E00", midpoint = 0,
+                       name = "CpG Slope") +
+  labs(x = "Feature Selection", y = "", title = "E. Method × Organ") +
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+# 2D: Heatmap organ × model slopes
+slopes_model_organ <- merged_metrics_scores  %>%
+  mutate(sel_cpg = num_selected_cpg) %>%
+    group_by(organ, model) %>%
+    do({
+        dat <- .
+        fit <- lmer(
+            performance_score ~ sel_cpg + num_candidate_cpg +
+                (1|selected_cpgs) + (1|chr),
+            data = dat,
+            REML = FALSE
+        )
+        broom.mixed::tidy(fit, effects = "fixed", conf.int = FALSE)
+    }) %>%
+    ungroup() %>%
+    filter(term == "sel_cpg") %>%
+    mutate(
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        star = dplyr::case_when(
+            p_value < 0.001 ~ "***",
+            p_value < 0.01  ~ "**",
+            p_value < 0.05  ~ "*",
+            TRUE ~ ""
+        ),
+        organ = factor(organ, levels = Multi_organ))
+
+p2d <- ggplot(slopes_model_organ, aes(x = model, y = organ, fill = estimate)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = star), size = 3, fontface = "bold") +
+  scale_fill_gradient2(low = "#56B4E9", mid = "white", high =  "#D55E00", midpoint = 0,
+                       name = "CpG Slope") +
+  labs(x = "Model Family", y = "", title = "F. Model × Organ") +
+  theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  
+  )
+
+fig2 <- (((p2a+ guides(colour="none")| p2b )) |( p2c +  guides(fill="none")| p2d ))+
+  plot_layout(widths  = c(0.6,0.6,1)) +
+  plot_annotation(title = "2. Performance Scaling with CpG Count")
+print(fig2)
+ggsave(paste0(output_directory,"/fig2_cpg_scaling.png"), fig2, width = 16, height = 10, dpi = 300)
+
+# =============================================================================
+# FIGURE 3: Global Design Effects
+# =============================================================================
+
+# 3A: Mixed effects model coefficients
+m <- lmer(performance_score ~ cpg_grouping + tile_methode + model + 
+            rsq_threshold + filter + epse_scaled + (1 | organ), 
+          data =metrics_scores )
+summary(m)
+Anova(m, type="III")
+p3a <- plot_model(m, type = "est", show.values = TRUE, value.offset = 0.3,
+                  title = "H. Fixed Effects: All Design Parameters") +
+  scale_color_manual(values = okabe_ito) +
+    theme_bw(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold") 
+  )+
+  theme(legend.position = "none")
+
+# 3B: Best method per organ (bar chart)
+best_per_organ <- metrics_scores  %>%
+  group_by(organ, cpg_grouping) %>%
+  summarise(median_perf = median(performance_score), .groups = "drop") %>%
+  group_by(organ) %>%
+  slice_max(median_perf, n = 1) %>%
+  ungroup() %>%
+  mutate(organ = factor(organ, levels = Multi_organ))
+
+p3b <- ggplot(best_per_organ, aes(x = organ, y = median_perf, fill = cpg_grouping)) +
+  geom_col(position = position_dodge(width = 0.9), alpha = 0.8) +
+  geom_label(
+    aes(label = round(median_perf, 2)),
+    position = position_dodge(width = 0.9),
+    fill = "white",
+    colour = "black",
+    size = 3,
+    label.size = 0.2,   # border thickness; set to 0 for no border
+    label.r = unit(0.1, "lines")  # corner radius; adjust if needed
+  ) +
+  coord_flip() +
+  labs(
+    x = "",
+    y = "Best Performance",
+    fill = "Best Method",
+    title = "G. Optimal Feature Selection per Organ"
+  ) +
+    theme_classic2(base_size = 16) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    axis.text    = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold"),   # facet labels
+    plot.title   = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold")
+  )+
+  scale_fill_manual(values = master_pal)
+
+fig3 <-   p3b | p3a + 
+  plot_annotation(title = "3. Global Design Effects & Best Practices") & 
+  theme(legend.position="bottom")
+print(fig3)
+ggsave(paste0(output_directory,"/fig3_global_effects.png"), fig3, width = 14, height = 8, dpi = 300)
+
+# =============================================================================
+# GRAND MANUSCRIPT FIGURE (All 3 figures combined)
+# =============================================================================
+manuscript_all <- fig1 / fig2 / fig3 +
+  plot_layout(heights = c(1, 0.8, 1))
+
+print(manuscript_all)
+ggsave("results/final_manuscript_figures/manuscript_complete_figure1.png", manuscript_all, width = 17, height = 20, dpi = 400)
+
+
+
+```
+

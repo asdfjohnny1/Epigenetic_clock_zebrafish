@@ -1,0 +1,381 @@
+---
+title: "Regulatory Regions of best mdoels"
+author: "Jean-Charles de coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+<!--
+=================================================================
+PIPELINE STAGE: 04 / Regulatory region mapping (6 of 6)
+=================================================================
+Loads the three combined CpG-annotation files produced by
+05_combine_regulatory_region_outputs.sh (promoters, gene bodies,
+transposable elements) together with the best-performing clock model
+per tissue (output of 03_combine_results/), and produces exploratory
+figures of methylation by regulatory context per tissue.
+=================================================================
+-->
+
+```{r config}
+# Set the root directory of this project (edit here, or export EPICLOCK_ROOT
+# before running).
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+# here() and read_excel() are used throughout (data/, results/ paths;
+# metadata loading), so load them up front.
+suppressPackageStartupMessages({
+  library(here)
+  library(readxl)
+})
+```
+
+
+```{r 1}
+knitr::opts_chunk$set(
+echo = TRUE,     # show code
+warning = F,  # show warnings if you want
+message = TRUE,  # show messages if you want
+error = FALSE    # do NOT display errors in output
+)
+```
+
+# ~ 
+# Processing regulatory regions for selected CpGs in each epigenetic clock model
+
+##Stage 1: Interval filtering run on HPC due to file size (>150 GB)
+
+```{r 2}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(data.table)
+})
+
+
+# Directories and input paths
+output_directory <- file.path(PROJECT_ROOT, "multitissue/making_clocks/R/scripts/regulatory_regions/output")
+
+TE_file_path <- file.path(PROJECT_ROOT, "multitissue/regulatory_regions/Transposable_Elements/Results/CpGs_TE_and_nonTE_combined_all_samples.txt")
+GB_file_path <- file.path(PROJECT_ROOT, "multitissue/regulatory_regions/Gene_bodies/results/CpGs_genebodies_and_non_combined_all_samples.txt")
+P_file_path  <- file.path(PROJECT_ROOT, "multitissue/regulatory_regions/Promoters/results/CpGs_promoters_and_nonpromoters_combined_all_samples.txt")
+
+# Metadata
+sample_data <- read_excel(here("data/final_metadata_uniqueID_new.xlsx")) %>%
+  select(Clock, Sanger_new_ID, Organ, Age, Sex) %>%
+  filter(Clock == "multitissue") %>%
+  rename(sanger_new_id = Sanger_new_ID)
+
+dir.create(output_directory, showWarnings = FALSE, recursive = TRUE)
+
+# Load best models
+best_brain_model <- readRDS(here("data/Metrics_all_models/best_models/best_model_brain.rds"))
+best_fin_model <- readRDS(here("data/Metrics_all_models/best_models/best_model_fin.rds"))
+best_intestines_model <- readRDS(here("data/Metrics_all_models/best_models/best_model_intestines.rds"))
+best_all_organs_model <- readRDS(here("data/Metrics_all_models/best_models/best_model_all_organs.rds"))
+
+best_model_list <- list(
+  all_organs  = best_all_organs_model,
+  brain       = best_brain_model,
+  fin         = best_fin_model,
+  intestines  = best_intestines_model
+)
+
+############################################################
+# Interval filtering helper
+############################################################
+
+filter_by_probe_intervals <- function(df, needed_probes) {
+
+  needed_dt <- tstrsplit(needed_probes, split = ":", fixed = TRUE)
+  needed_dt <- data.table(
+    chr   = as.integer(needed_dt[[1]]),
+    start = as.integer(needed_dt[[2]]),
+    end   = as.integer(needed_dt[[3]])
+  )
+
+  df[, chr := as.integer(chr)]
+  df[, start := as.integer(start)]
+  df[, end   := as.integer(end)]
+
+  setkey(needed_dt, chr, start, end)
+  setkey(df,        chr, start, end)
+
+  hits <- foverlaps(df, needed_dt, nomatch = 0L)
+  hits[, .SD, .SDcols = names(df)]
+}
+
+############################################################
+# Process each model
+############################################################
+
+RR <- list()
+
+for (model in names(best_model_list)) {
+
+  message("Processing model : ", model)
+  obj <- best_model_list[[model]]
+
+  cpg_list <- obj$filtered_metrics %>%
+    filter(Probe %in% obj$best_metrics$best_model$selected_Cpg)
+
+  rm(obj)
+  gc()
+
+  colnames(cpg_list) <- c("Probe", "clock_r_squared", "clock_mehtylation")
+
+  needed_probes <- unique(sub("chr", " ", cpg_list$Probe))
+
+  ############################################################
+  # Transposable elements
+  ############################################################
+  df_TE <- fread(
+    TE_file_path,
+    select = c("chr", "start", "end", "meth_pct", "subfamily", "class", "label", "sanger_new_id")
+  )
+
+  df_TE <- filter_by_probe_intervals(df_TE, needed_probes)
+  gc()
+
+  df_TE1 <- df_TE %>%
+    mutate(
+      subfamily = coalesce(subfamily, "nonTE"),
+      label     = coalesce(label,     "nonTE"),
+      class     = coalesce(class,     "nonTE"),
+      RR        = "TE"
+    ) %>%
+    filter(chr %in% 1:25,
+           !class %in% c("DNA?", "Satellite", "Satellite?", "Unknown"),
+           !grepl("^non", label)) %>%
+    left_join(sample_data, by = "sanger_new_id") %>%
+    filter(!is.na(Organ), !is.na(Age), !is.na(Sex))
+
+  ############################################################
+  # Gene bodies
+  ############################################################
+  df_GB <- fread(
+    GB_file_path,
+    select = c("chr", "start", "end", "meth_pct", "genebody_name",
+               "(some_genebody_extra_cols)", "sanger_new_id")
+  )
+
+  df_GB <- filter_by_probe_intervals(df_GB, needed_probes)
+  gc()
+
+  df_GB1 <- df_GB %>%
+    filter(chr %in% 1:25) %>%
+    mutate(
+      genebody_name = sub('.*gene_name "([^"]+)".*', '\\1', genebody_name),
+      RR = "GB"
+    ) %>%
+    rename(label = "(some_genebody_extra_cols)") %>%
+    left_join(sample_data, by = "sanger_new_id") %>%
+    filter(!is.na(Organ), !is.na(Age), !is.na(Sex),
+           !grepl("gene_bodies_no", label))
+
+  ############################################################
+  # Promoters
+  ############################################################
+  df_P <- fread(
+    P_file_path,
+    select = c("V1", "chr", "start", "end", "promoter_end",
+               "(some_promoter_extra_cols)", "sanger_new_id"),
+    col.names = c("chr", "start", "end", "meth_pct",
+                  "promoter_name", "label", "sanger_new_id")
+  )
+
+  df_P <- filter_by_probe_intervals(df_P, needed_probes)
+  gc()
+
+  df_P1 <- df_P %>%
+    filter(chr %in% 1:25) %>%
+    mutate(
+      promoter_name = sub('.*gene_name "([^"]+)".*', '\\1', promoter_name),
+      RR = "P"
+    ) %>%
+    left_join(sample_data, by = "sanger_new_id") %>%
+    filter(!is.na(Organ), !is.na(Age), !is.na(Sex),
+           !grepl("promoter_no", label))
+
+  ############################################################
+  # Combine all regulatory-region annotations
+  ############################################################
+
+  RR[[model]] <- bind_rows(df_TE1, df_GB1, df_P1)
+  gc()
+}
+
+saveRDS(RR, file.path(output_directory, "RR.csv"))
+
+
+```
+
+
+## Stage 2: Local integration, cleaning, and consolidation
+
+```{r 3}
+
+suppressPackageStartupMessages({
+  library(here)
+  library(ggplot2)
+  library(ggh4x)
+  library(ggpubr)
+  library(patchwork)
+})
+
+# Colour palette
+okabe_ito_palette <- c(
+  "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+  "#0072B2", "#D55E00", "#CC79A7", "#000000"
+)
+okabe_ito_palettu <- colorRampPalette(okabe_ito_palette)
+
+RR <- readRDS(here("data/Regulatory_Regions/RR.rds"))
+
+out_dir <- here("results/Regulatory_regions")
+
+theme_code <- theme(
+  axis.title.x = element_text(size = 14, face = "bold"),
+  axis.title.y = element_text(size = 14, face = "bold"),
+  axis.text.x = element_text(size = 12, face = "bold"),
+  axis.text.y = element_text(size = 12, face = "bold"),
+  strip.text = element_text(size = 12, face = "bold"),
+  plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+
+
+for (model in names(RR)){
+  obj <- RR[[model]]
+  
+  if(model == "best_brain_model"   ) {
+  organ <- "Brain"
+  
+} else if (model == "best_fin_model") {
+  organ <- "Fin_clip_caudal"
+  
+} else  if(model ==  "best_intestines_model") {
+  organ <- "Intestines"
+  
+} else if(model == "best_all_organs_model") {
+  organ <- c("Brain","Fin_clip_caudal","Intestines")
+}
+
+  obj <- obj %>%
+    filter(Organ %in% organ)
+  
+  RR[[model]] <- obj
+}
+
+
+RR_graphs <- list()
+
+for (model in names(RR)){
+
+  message("Processing model : ", model)
+  
+  obj <- RR[[model]]
+
+
+  # Plot 1: Sex vs meth_pct
+RR_graphs[[model]]$p1 <- ggplot(obj, aes(x = Sex, y = meth_pct, colour = label)) +
+  stat_summary(fun = mean, geom = "line", aes(group = interaction(label))) +
+  stat_summary(fun = mean, geom = "point", size = 1.3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1) +
+  scale_colour_manual(values = okabe_ito_palettu(length(unique(obj$label)))) +
+  theme_classic2() + 
+    labs(y = "Methylation (%)", x = "", colour = "") +
+  theme_code + 
+     ylim(0,100) +
+  facet_nested(~Organ)
+  
+RR_graphs[[model]]$p1
+
+# Plot 2: Chromosome vs meth_pct
+RR_graphs[[model]]$p2 <- ggplot(obj, aes(x = factor(chr, levels = 1:25), y = meth_pct, colour = label)) +
+  stat_summary(fun = mean, geom = "line", aes(group = interaction(label))) +
+  stat_summary(fun = mean, geom = "point", size = 1.3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1) +
+  scale_colour_manual(values = okabe_ito_palettu(length(unique(obj$label)))) +
+  theme_classic2() + 
+  labs(y = "Methylation (%)", x = "Chromosome", colour = "") +
+  theme_code + 
+   ylim(0,100)+
+  facet_wrap(~ Organ, ncol = 1)
+
+RR_graphs[[model]]$p2
+
+# Plot 3: Age vs meth_pct
+RR_graphs[[model]]$p3 <- ggplot(obj, aes(x =Age, y = meth_pct, colour = label)) +
+  stat_summary(fun = mean, geom = "line", aes(group = interaction(label))) +
+  stat_summary(fun = mean, geom = "point", size = 1.3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1) +
+  scale_colour_manual(values = okabe_ito_palettu(length(unique(obj$label)))) +
+  theme_classic2() + 
+  labs(y = "Methylation (%)", x = "Age", colour = "") +
+  theme_code + 
+   ylim(0,100)+
+  facet_nested(~ Organ )
+RR_graphs[[model]]$p3
+
+
+# Plot 4: TE class 
+RR_graphs[[model]]$p4 <-  obj %>%
+  filter(label == "TE") %>%
+ggplot (aes(x =chr, y = meth_pct, colour = class)) +
+  stat_summary(fun = mean, geom = "line", aes(group = interaction(class))) +
+  stat_summary(fun = mean, geom = "point", size = 1.3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, size = 1) +
+  scale_colour_manual(values = okabe_ito_palettu(length(unique(obj$class)))) +
+  theme_classic2() + 
+  labs(y = "Methylation (%)", x = "Chromosomes", colour = "") +
+  theme_code + 
+   ylim(0,100)+
+  facet_nested(~ Organ )
+
+RR_graphs[[model]]$p3
+
+
+}
+
+pp1 <-( RR_graphs$best_all_organs_model$p1 /
+  ( RR_graphs$best_brain_model$p1 | RR_graphs$best_fin_model$p1 | RR_graphs$best_intestines_model$p1)) +
+  plot_layout(guides ="collect") +
+plot_annotation(
+              tag_levels = "A")
+pp1
+ggsave(filename = file.path(out_dir, paste0(model, "_Sex_vs_methpct.png")),
+       plot = pp1, width = 8, height = 5, dpi = 300)
+
+pp2 <-( RR_graphs$best_all_organs_model$p2 |
+  ( RR_graphs$best_brain_model$p2 / RR_graphs$best_fin_model$p2 / RR_graphs$best_intestines_model$p2)) +
+  plot_layout(guides ="collect") +
+plot_annotation(
+              tag_levels = "A")
+pp2
+ggsave(filename = file.path(out_dir, paste0(model, "_Chr_vs_methpct.png")),
+       plot = pp2, width = 10, height = 5, dpi = 300)
+
+pp3 <-( RR_graphs$best_all_organs_model$p3 /
+  ( RR_graphs$best_brain_model$p3 | RR_graphs$best_fin_model$p3 | RR_graphs$best_intestines_model$p3)) +
+  plot_layout(guides ="collect") +
+plot_annotation(
+              tag_levels = "A")
+pp3
+ggsave(filename = file.path(out_dir, paste0(model, "_Age_vs_methpct.png")),
+       plot = pp3, width = 8, height = 5, dpi = 300)
+
+
+pp4 <-( RR_graphs$best_all_organs_model$p4 |
+  ( RR_graphs$best_brain_model$p4 / RR_graphs$best_fin_model$p4 )) +
+  plot_layout(guides ="collect") +
+plot_annotation(
+              tag_levels = "A")
+pp4
+ggsave(filename = file.path(out_dir, paste0(model, "_TE_Chr.png")),
+       plot = pp4, width = 10, height = 5, dpi = 300)
+
+
+
+
+```
+
+# ~
