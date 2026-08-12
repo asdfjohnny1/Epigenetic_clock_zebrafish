@@ -6,6 +6,11 @@ output: html_document
 editor_options: 
   chunk_output_type: console
 ---
+To knitt - use this code 
+rmarkdown::render(
+  "06_cross_tissue_ageing_biology/01_setup_palettes_functions_data_loading.Rmd",
+  output_format = "html_document"
+)
 
 ```{r a}
 knitr::opts_chunk$set(
@@ -105,7 +110,7 @@ strip.background = element_rect(fill="gray95"))
 ```
 
 # Best models 
-```{r c}
+```{r c, eval=FALSE}
 library(here)
 best_model_list <- list(
   Multi_organ      = readRDS(here("data/Metrics_all_models/best_models/best_model_all_organs.rds")),
@@ -119,7 +124,7 @@ best_model_list <- list(
 
 
 # Mehtylation_data
-```{r d}
+```{r d, eval=FALSE}
 suppressPackageStartupMessages({
   
 library(readr)
