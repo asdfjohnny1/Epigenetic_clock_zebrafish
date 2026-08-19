@@ -38,3 +38,16 @@ sbatch --array=0-$((NUM_FILES - 1)) hpc_array_jobs/submit_point_lasso.sh
 
 Output: one `.rds` model object per array task, feeding
 [`03_combine_results/`](../03_combine_results/).
+
+**Note on outer-iteration reporting:** each script keeps only the single
+best-performing outer iteration out of 100 for the headline result (a
+winner's-curse risk given the small held-out validation folds) - the
+"keep best" logic itself is unchanged. All six scripts also record every
+outer iteration's held-out validation metrics
+(`val_r_squared`, `val_mae`, `n_cpg`) into `all_outer_validation_metrics`,
+so mean +/- CI performance across all 100 iterations can be reported
+alongside the best-iteration numbers. Re-run step 6 to populate this field
+in new `.rds` outputs, then see
+[`03_combine_results/03_collate_outer_iteration_metrics.R`](../03_combine_results/03_collate_outer_iteration_metrics.R)
+and
+[`05_clock_design_benchmarking/07_check_outer_iteration_variability.Rmd`](../05_clock_design_benchmarking/07_check_outer_iteration_variability.Rmd).

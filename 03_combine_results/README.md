@@ -8,8 +8,11 @@ shared results-aggregation step for **both aims** of the study.
 |---|---|
 | `01_collate_model_metrics.R` | Reads every per-model `.rds` file; extracts predicted-vs-chronological ages (train/test/validation), MAE, R^2, and selected-CpG sets; incrementally writes three collated CSVs (metrics, predicted ages, CpG sets). |
 | `02_build_summary_tables.R` | Reads the CSVs from the previous script (plus the raw `.rds` files again, for CpG identities); builds the final summary tables and diagnostic scatterplots (predicted vs. chronological age per tissue/model). |
+| `03_collate_outer_iteration_metrics.R` | Collates the per-outer-iteration validation metrics recorded by the patched step-6 scripts (see [`02_clock_construction/README.md`](../02_clock_construction/README.md)) into a long-format CSV, one row per model x outer iteration. Only produces output for `.rds` files generated after the step-6 patch. |
 
-Run in order: `01` then `02`.
+Run in order: `01` then `02`. Run `03` separately, only after re-running
+step 6 with the patched scripts (see the note in
+[`02_clock_construction/README.md`](../02_clock_construction/README.md)).
 
 **3,036 of the 4,320 trained models pass QC/performance criteria and are
 retained** for all analyses reported in the manuscript (see Methods).

@@ -30,13 +30,15 @@ stages 05-06 are their respective downstream analyses.
 | 4 | [`04_regulatory_region_mapping/`](04_regulatory_region_mapping/) | Map CpGs to promoters / gene bodies / transposable elements |
 | 5 | [`05_clock_design_benchmarking/`](05_clock_design_benchmarking/) | Aim 1 downstream analysis & figures |
 | 6 | [`06_cross_tissue_ageing_biology/`](06_cross_tissue_ageing_biology/) | Aim 2 downstream analysis & figures |
+| 7 | [`07_external_validation/`](07_external_validation/) | Apply the trained clocks to an independent zebrafish methylation dataset, from raw FastQ through to predicted age |
 
 Each folder has its own README with a script-by-script breakdown. Run stages
 in numeric order; within stages 05/06, run the numbered `.Rmd` files in order
 within one R session (they build on each other's environment rather than
 each reloading everything from scratch - see those folders' READMEs).
 
-Stages 01-04 are shared between both aims.
+Stages 01-04 are shared between both aims. Stage 07 is independent of 05/06
+and only needs stage 02/03's output (the trained clocks).
 
 ## Getting started
 
@@ -96,3 +98,11 @@ MIT - see [`LICENSE`](LICENSE).
 
 ---
 
+### Things still to do before making this repository public
+
+- [ ] Replace the placeholder repository URL in `CITATION.cff`.
+- [ ] Confirm the MIT license choice (a reasonable default for research code, but your call/your institution's may have a preference).
+- [ ] Decide how to handle the large excluded data files (~254MB best-model object, ~250MB regulatory-region table, multi-GB methylation matrices, 15GB raw coverage files) - Git LFS, an external Zenodo/OSF deposit, or leave them as "regenerate via the pipeline" - see [`data/README.md`](data/README.md) for exactly what's affected.
+- [ ] Decide whether to commit a `renv.lock` for fully pinned package versions (see note at the bottom of `environment/R_dependencies.txt`).
+- [ ] Confirm `04_regulatory_region_mapping/06_regulatory_region_models.Rmd` produces the figure panel layout you want to keep.
+- [ ] Check total clone size is acceptable to you (`data/` alone is currently ~110MB, mostly two ~45MB predicted-age CSVs) - trim further if you want a leaner repo.

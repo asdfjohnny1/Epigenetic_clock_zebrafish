@@ -1,0 +1,328 @@
+---
+title: "Check: CpG-set duplication and drift-direction"
+author: "Jean-Charles de coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+SUPPLEMENTARY CHECK - not part of the main numbered pipeline (01-10).
+=================================================================
+Two questions in one script, because they share the same CpG-overlap
+objects:
+
+PART A - are the CpG sets behind Fig4D and Fig5D actually the same set
+drawn twice (the two panels currently read as if they show independent
+evidence)? Answered here using results_cpg_final.csv alone (tracked in
+the repo - no excluded data needed).
+
+PART B - re-derives the per-organ methylation-drift direction (slope vs
+mean-methylation deviation) for each of the three CpG sets in question,
+using methylation_cpgs.csv (also tracked; only the raw per-organ .tsv
+matrices under data/Metrics_all_models/methylation_data/ are excluded).
+This lets the sign/direction be compared directly against what Fig4D
+states, addressing a figure-vs-text discrepancy.
+
+This is fully self-contained - it does not require 02_quality_control_
+and_model_matrices.Rmd or 03_best_model_ranking_significance.Rmd or
+07_methylation_drift_and_pcgt_enrichment.Rmd to have been run first,
+though it reuses their code verbatim.
+=================================================================
+-->
+
+```{r config}
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+suppressPackageStartupMessages({
+  library(here)
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(tibble)
+  library(GenomicRanges)
+  library(lme4)
+  library(car)
+  library(emmeans)
+  library(ggplot2)
+  library(readr)
+})
+```
+
+# Load data (self-contained)
+
+```{r load-data}
+clean_up_data <- function(df) {
+  df %>%
+    filter(dataset == "Validation") %>%
+    filter(!model %in% c("old_elastic_net", "old_lasso")) %>%
+    mutate(
+      rsq_threshold = dplyr::recode(rsq_threshold,
+        "nofilter" = "r2_nofilter", "0.05" = "r2_0.05", "0.1" = "r2_0.1",
+        "0.2" = "r2_0.2", "0.3" = "r2_0.3"),
+      rsq_threshold = factor(rsq_threshold,
+        levels = c("r2_nofilter","r2_0.05","r2_0.1","r2_0.2","r2_0.3")),
+      filter = factor(filter, levels = c("nofilter","min5","min10","min20")),
+      unique_model_id = paste(cpg_grouping, model_id, sep = "_")
+    ) %>%
+    mutate(organ = case_when(
+      organ == "Fin_clip_caudal" ~ "Caudal_Fin",
+      organ == "All_organs" ~ "Multi_organ",
+      TRUE ~ organ
+    ))
+}
+
+cpg_data <- read.csv(here("data/Metrics_all_models/final_merged/results_cpg_final.csv"))
+cpg_data_validation <- clean_up_data(cpg_data)
+
+cpg_data_validation_long <- cpg_data_validation %>%
+  tidyr::separate_rows(selected_cpgs, sep = ";") %>%
+  dplyr::mutate(selected_cpgs = trimws(selected_cpgs)) %>%
+  mutate(selected_cpgs = gsub("chr", "", selected_cpgs)) %>%
+  separate(selected_cpgs, c("chr", "start", "end"), remove = FALSE, sep = ":") %>%
+  dplyr::mutate(chr = trimws(chr), chr = factor(chr, levels = c(1:25)))
+```
+
+# Part A: CpG-set overlap / duplication check
+
+Verbatim reproduction of the overlap-computation logic from
+`03_best_model_ranking_significance.Rmd`.
+
+```{r overlap-computation}
+fraction_threshold <- 0.05
+
+gr_all <- GRanges(
+  seqnames = cpg_data_validation_long$chr,
+  ranges   = IRanges(start = as.numeric(cpg_data_validation_long$start),
+                     end   = as.numeric(cpg_data_validation_long$end)),
+  cpg      = cpg_data_validation_long$selected_cpgs,
+  organ    = cpg_data_validation_long$organ,
+  model_id = cpg_data_validation_long$unique_model_id
+)
+
+get_repeatable_regions <- function(gr, fraction_threshold = 0.05) {
+  organs <- unique(gr$organ)
+  repeatable_list <- map(organs, function(org_name) {
+    message("Starting :", org_name)
+    gr_org <- gr[gr$organ == org_name]
+    n_runs <- length(unique(gr_org$model_id))
+    threshold <- ceiling(fraction_threshold * n_runs)
+    gr_reduced <- reduce(gr_org)
+    counts <- sapply(seq_along(gr_reduced), function(i) {
+      sum(countOverlaps(gr_org, gr_reduced[i]) > 0)
+    })
+    gr_repeatable <- gr_reduced[counts >= threshold]
+    gr_repeatable$organ <- org_name
+    gr_repeatable
+  })
+  names(repeatable_list) <- organs
+  repeatable_list
+}
+
+repeatable_per_organ <- get_repeatable_regions(gr_all, fraction_threshold = fraction_threshold)
+
+k1_df <- map_df(repeatable_per_organ, function(gr) {
+  tibble(
+    organs = gr$organ[1],
+    chr = as.character(seqnames(gr)),
+    start = start(gr),
+    end = end(gr)
+  )
+}) %>%
+  mutate(k = "k1", Probe = paste(chr, start, end, sep = ":")) %>%
+  dplyr::select(k, organs, chr, start, end, Probe)
+
+cpg_ranges <- cpg_data_validation_long %>%
+  dplyr::select(cpg_grouping, organ, selected_cpgs, chr, start, end) %>%
+  mutate(
+    selected_cpgs = trimws(selected_cpgs),
+    start = as.numeric(start),
+    end   = as.numeric(end)
+  )
+
+cpg_granges_list <- cpg_ranges %>%
+  group_by(organ) %>%
+  summarise(
+    gr = list(GRanges(seqnames = chr, ranges = IRanges(start = start, end = end), cpg = selected_cpgs)),
+    .groups = "drop"
+  ) %>%
+  deframe()
+
+organ_names <- names(cpg_granges_list)
+overlap_results <- list()
+
+for (k in 2:length(organ_names)) {
+  combs <- combn(organ_names, k, simplify = FALSE)
+  overlap_results[[paste0("k", k)]] <- map_df(combs, function(orgs_combo) {
+    gr_list <- cpg_granges_list[orgs_combo]
+    cpg_vectors <- lapply(gr_list, function(gr) gr$cpg)
+    intersect_cpgs <- Reduce(intersect, cpg_vectors)
+    if (length(intersect_cpgs) == 0) return(NULL)
+    tibble(organs = paste(orgs_combo, collapse = ";"), cpg = intersect_cpgs)
+  })
+}
+
+k2_plus_df <- bind_rows(overlap_results, .id = "k")
+final_overlap_df <- bind_rows(k1_df, k2_plus_df)
+
+best_cpg_overlap_all <- final_overlap_df %>%
+  filter(k == "k4") %>%
+  pull(cpg)
+
+best_cpg_overlap_single <- final_overlap_df %>%
+  filter(organs == "Brain;Caudal_Fin;Intestines") %>%
+  pull(cpg)
+
+best_selected_cpgs_organs <- list(
+  Brain       = final_overlap_df %>% filter(organs == "Brain") %>% pull(Probe),
+  Caudal_Fin  = final_overlap_df %>% filter(organs == "Caudal_Fin") %>% pull(Probe),
+  Intestines  = final_overlap_df %>% filter(organs == "Intestines") %>% pull(Probe),
+  Multi_organ = final_overlap_df %>% filter(organs == "Multi_organ") %>% pull(Probe)
+)
+```
+
+```{r overlap-summary}
+overlap_between_sets <- intersect(best_cpg_overlap_all, best_cpg_overlap_single)
+
+cat("=== CpG set sizes ===\n")
+cat("best_cpg_overlap_all    (Fig5D panel, k4 - all four organs):", length(best_cpg_overlap_all), "\n")
+cat("best_cpg_overlap_single (Fig4D panel, Brain;Caudal_Fin;Intestines):", length(best_cpg_overlap_single), "\n")
+cat("Manuscript states 30 shared loci for the relevant panel - compare against the counts above.\n\n")
+
+cat("=== Direct overlap between the two panels' CpG sets ===\n")
+cat("Shared CpGs:", length(overlap_between_sets), "\n")
+cat("As % of best_cpg_overlap_all:", round(100 * length(overlap_between_sets) / length(best_cpg_overlap_all), 1), "%\n")
+cat("As % of best_cpg_overlap_single:", round(100 * length(overlap_between_sets) / length(best_cpg_overlap_single), 1), "%\n\n")
+
+if (length(overlap_between_sets) == length(best_cpg_overlap_all) ||
+    length(overlap_between_sets) == length(best_cpg_overlap_single)) {
+  cat("RESULT: one set is a full subset of the other - Fig4D and Fig5D are showing\n",
+      "the same underlying CpGs (or a strict subset), not independent panels.\n")
+} else if (length(overlap_between_sets) == 0) {
+  cat("RESULT: no overlap - the two panels are drawing on genuinely disjoint CpG sets.\n")
+} else {
+  cat("RESULT: partial overlap - the two panels share some but not all CpGs.\n")
+}
+```
+
+# Part B: drift-direction re-check for each CpG set
+
+Verbatim reproduction of the `slopes_all` / `boot_cor` logic from
+`07_methylation_drift_and_pcgt_enrichment.Rmd`, run once per CpG set so
+the sign of the deviation-vs-slope correlation can be read off directly
+and compared with what Fig4D currently states.
+
+```{r load-methylation}
+methylation_best_cpgs <- read_csv(here("data/Metrics_all_models/methylation_data/methylation_cpgs.csv"),
+                                   show_col_types = FALSE) %>%
+  mutate(
+    Age = as.factor(Age),
+    Organ = case_when(Organ == "Fin_clip_caudal" ~ "Caudal_Fin", TRUE ~ Organ)
+  )
+```
+
+```{r drift-check-function}
+run_drift_check <- function(selected_cpg, label, tissue_specific = FALSE) {
+
+  orgs <- c("Multi_organ", "Brain", "Caudal_Fin", "Intestines")
+
+  if (tissue_specific) {
+    meth_list <- list()
+    for (o in orgs) {
+      cpg <- selected_cpg[[o]]
+      df <- methylation_best_cpgs %>% filter(tile %in% cpg)
+      if (o != "Multi_organ") df <- df %>% filter(Organ == o)
+      df$organ_value <- o
+      meth_list[[o]] <- df
+    }
+    merged_meth <- bind_rows(meth_list) %>%
+      mutate(organ_value = factor(organ_value, levels = c("Brain","Caudal_Fin","Intestines","Multi_organ")),
+             meth = methylation, CpG = tile)
+  } else {
+    df <- methylation_best_cpgs %>% filter(tile %in% selected_cpg)
+    merged_meth <- df %>%
+      mutate(Organ = factor(Organ, levels = c("Brain","Caudal_Fin","Intestines")),
+             meth = methylation, CpG = tile)
+  }
+
+  n_cpgs_matched <- length(unique(merged_meth$CpG))
+
+  if (n_cpgs_matched == 0) {
+    cat("[", label, "] 0 of the selected CpGs are present in methylation_cpgs.csv",
+        "(170 tiles total) - cannot compute drift direction for this set.\n\n")
+    return(NULL)
+  }
+
+  slopes_all <- merged_meth %>%
+    group_by(Organ, CpG) %>%
+    summarise(
+      slope     = coef(lm(meth ~ Age))[2],
+      mean_meth = median(meth, na.rm = TRUE),
+      .groups   = "drop"
+    ) %>%
+    mutate(deviation = mean_meth - 0.5)
+
+  set.seed(42)
+  nboot <- 1000
+  boot_cor <- slopes_all %>%
+    group_by(Organ) %>%
+    summarise(
+      cor_boot = list({
+        sapply(1:nboot, function(i) {
+          samp <- sample(n(), replace = TRUE)
+          cor(deviation[samp], slope[samp], use = "complete.obs")
+        })
+      }),
+      .groups = "drop"
+    )
+
+  boot_summary <- boot_cor %>%
+    rowwise() %>%
+    mutate(
+      mean_cor = mean(unlist(cor_boot)),
+      se_cor   = sd(unlist(cor_boot)) / sqrt(length(unlist(cor_boot))),
+      label    = label
+    ) %>%
+    ungroup()
+
+  cat("[", label, "] CpGs matched:", n_cpgs_matched, "of", length(unlist(selected_cpg)), "selected\n")
+  print(boot_summary %>% dplyr::select(Organ, mean_cor, se_cor))
+  cat("\n")
+
+  boot_summary
+}
+
+drift_tissue_specific <- run_drift_check(best_selected_cpgs_organs, "tissue-specific (Fig4D)", tissue_specific = TRUE)
+drift_universal_all    <- run_drift_check(best_cpg_overlap_all, "universal, all 4 organs (Fig5D)")
+drift_universal_single  <- run_drift_check(best_cpg_overlap_single, "universal, soma overlap (Brain;Fin;Intestines)")
+```
+
+```{r drift-plot}
+all_drift <- bind_rows(drift_tissue_specific, drift_universal_all, drift_universal_single)
+
+if (nrow(all_drift) > 0) {
+  ggplot(all_drift, aes(x = Organ, y = mean_cor, fill = Organ)) +
+    geom_col() +
+    geom_errorbar(aes(ymin = mean_cor - se_cor, ymax = mean_cor + se_cor), width = 0.2) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    facet_wrap(~label, scales = "free_x") +
+    labs(y = "Correlation (deviation vs slope)", x = "",
+         title = "Drift-direction re-check across CpG-set definitions") +
+    theme_classic(base_size = 12) +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+# Interpretation
+
+Part A shows directly whether Fig4D and Fig5D are duplicating the same
+CpG evidence (a "one finding drawn twice" problem) or are genuinely
+independent - compare the printed overlap counts against the "30 shared
+loci" figure in the manuscript text.
+
+Part B gives, per CpG-set definition, the sign and bootstrap CI of the
+deviation-vs-slope correlation in each organ. Read the sign for each
+organ/panel combination against Fig4D's caption and surrounding text; a
+sign flip for the panel(s) actually underlying Fig4D is a direction
+mismatch that needs resolving before submission.

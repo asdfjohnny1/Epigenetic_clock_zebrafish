@@ -1,0 +1,199 @@
+---
+title: "Check: model-count-matched subsampling robustness"
+author: "Jean-Charles de coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+SUPPLEMENTARY CHECK - not part of the main numbered pipeline (01-05).
+=================================================================
+Point clocks have far fewer validation models per tissue (13-35) than
+Cluster (309-348) or Tile (456-476) - see 01_setup_load_and_clean.Rmd /
+02_best_model_ranking_significance.Rmd. This asks whether the "Tile >
+Point/Cluster" ranking on performance_score survives once all three
+groups are subsampled down to the same n.
+
+Run 01_setup_load_and_clean.Rmd and 02_best_model_ranking_significance.Rmd
+first in the same session (this script reuses `ranked` from there) - or
+run the self-contained data-loading chunk below on its own.
+=================================================================
+-->
+
+```{r config}
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+suppressPackageStartupMessages({
+  library(here)
+  library(dplyr)
+  library(scales)
+  library(lme4)
+  library(car)
+  library(ggplot2)
+  library(purrr)
+})
+```
+
+# Rebuild `ranked` (skip this chunk if already in your session)
+
+```{r rebuild-ranked}
+if (!exists("ranked")) {
+
+  metrics_data <- read.csv(here("data/Metrics_all_models/final_merged/results_metrics_final.csv"))
+
+  clean_up_data <- function(df) {
+    df %>%
+      filter(dataset == "Validation") %>%
+      filter(!model %in% c("old_elastic_net", "old_lasso")) %>%
+      mutate(
+        rsq_threshold = dplyr::recode(rsq_threshold,
+          "nofilter" = "r2_nofilter", "0.05" = "r2_0.05", "0.1" = "r2_0.1",
+          "0.2" = "r2_0.2", "0.3" = "r2_0.3"),
+        rsq_threshold = factor(rsq_threshold,
+          levels = c("r2_nofilter","r2_0.05","r2_0.1","r2_0.2","r2_0.3")),
+        filter = factor(filter, levels = c("nofilter","min5","min10","min20")),
+        unique_model_id = paste(cpg_grouping, model_id, sep = "_")
+      ) %>%
+      mutate(organ = case_when(
+        organ == "Fin_clip_caudal" ~ "Caudal_Fin",
+        organ == "All_organs" ~ "Multi_organ",
+        TRUE ~ organ
+      ))
+  }
+
+  metrics_data_validation <- clean_up_data(metrics_data)
+
+  ranked <- metrics_data_validation %>%
+    group_by(cpg_grouping, model, organ) %>%
+    mutate(
+      mae_score = scales::rescale(-mae),
+      r2_score  = scales::rescale(r_squared_value)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      performance_score = mae_score + r2_score,
+      cpg_grouping = factor(cpg_grouping),
+      tile_methode = factor(tile_methode),
+      model  = factor(model),
+      organ  = factor(organ),
+      epse_scaled = scale(epse)
+    )
+}
+
+table(ranked$cpg_grouping)
+```
+
+# Full-data baseline (for comparison)
+
+```{r baseline}
+m_full <- lmer(
+  performance_score ~ organ * cpg_grouping + (1 | model_id),
+  data = ranked
+)
+Anova(m_full, type = "III")
+```
+
+# Subsampling robustness check
+
+For each of `n_repeats` iterations: subsample Cluster and Tile down to the
+same n as Point (matched **per tissue**, since the imbalance is present in
+every tissue - see Figure 1A), refit the same organ x cpg_grouping model,
+and record the CpG-grouping omnibus p-value and the three pairwise
+estimates. If the "Tile > Point/Cluster" ranking is a real effect and not
+an artefact of Point's small n, it should hold in most/all repeats.
+
+```{r subsample-check}
+set.seed(42)
+n_repeats <- 200
+
+point_n_per_tissue <- ranked %>%
+  filter(cpg_grouping == "Point") %>%
+  count(organ, name = "n_point")
+
+subsample_once <- function(seed) {
+  set.seed(seed)
+
+  matched <- ranked %>%
+    inner_join(point_n_per_tissue, by = "organ") %>%
+    group_by(organ, cpg_grouping) %>%
+    group_modify(function(df, key) {
+      if (key$cpg_grouping == "Point") return(df)
+      n_target <- unique(df$n_point)
+      df %>% slice_sample(n = min(n_target, nrow(df)))
+    }) %>%
+    ungroup()
+
+  m <- tryCatch(
+    lmer(performance_score ~ organ * cpg_grouping + (1 | model_id), data = matched),
+    error = function(e) NULL
+  )
+  if (is.null(m)) return(NULL)
+
+  a <- tryCatch(Anova(m, type = "III"), error = function(e) NULL)
+  if (is.null(a)) return(NULL)
+
+  em <- tryCatch(
+    emmeans::emmeans(m, pairwise ~ cpg_grouping)$contrasts %>% as.data.frame(),
+    error = function(e) NULL
+  )
+
+  tibble(
+    seed = seed,
+    cpg_grouping_chisq = a["cpg_grouping", "Chisq"],
+    cpg_grouping_p      = a["cpg_grouping", "Pr(>Chisq)"],
+    cluster_tile_est = if (!is.null(em)) em$estimate[em$contrast == "Cluster - Tile"] else NA,
+    cluster_tile_p   = if (!is.null(em)) em$p.value[em$contrast == "Cluster - Tile"] else NA,
+    point_tile_est   = if (!is.null(em)) em$estimate[em$contrast == "Point - Tile"] else NA,
+    point_tile_p     = if (!is.null(em)) em$p.value[em$contrast == "Point - Tile"] else NA
+  )
+}
+
+results <- map_df(1:n_repeats, subsample_once)
+```
+
+# Summary
+
+```{r summary}
+cat("Repeats completed:", nrow(results), "of", n_repeats, "\n\n")
+
+cat("=== CpG-grouping omnibus test across repeats ===\n")
+cat("% of repeats significant (p < 0.05):",
+    round(100 * mean(results$cpg_grouping_p < 0.05, na.rm = TRUE), 1), "%\n")
+print(summary(results$cpg_grouping_chisq))
+
+cat("\n=== Cluster vs Tile across repeats ===\n")
+cat("% of repeats where Tile still wins (estimate < 0) and p < 0.05:",
+    round(100 * mean(results$cluster_tile_est < 0 & results$cluster_tile_p < 0.05, na.rm = TRUE), 1), "%\n")
+
+cat("\n=== Point vs Tile across repeats ===\n")
+cat("% of repeats where Tile still wins (estimate < 0) and p < 0.05:",
+    round(100 * mean(results$point_tile_est < 0 & results$point_tile_p < 0.05, na.rm = TRUE), 1), "%\n")
+cat("Median estimate:", round(median(results$point_tile_est, na.rm = TRUE), 3),
+    " | Median p:", round(median(results$point_tile_p, na.rm = TRUE), 3), "\n")
+```
+
+```{r plot}
+p <- ggplot(results, aes(x = point_tile_est)) +
+  geom_histogram(bins = 30, fill = "#C46E7A", colour = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    title = paste0("Point vs Tile estimate across ", n_repeats, " count-matched subsamples"),
+    x = "Estimate (negative = Tile outperforms Point)", y = "Count"
+  ) +
+  theme_classic(base_size = 12)
+
+p
+```
+
+# Interpretation
+
+If the histogram above sits consistently on one side of zero and most
+repeats are significant, the "Tile > Point" (or "Tile > Cluster") finding
+is unlikely to be a small-n artefact. If it straddles zero, or the
+significant fraction is well below the ~95% you'd expect from a robust
+effect, the original comparison is likely sensitive to Point's small
+sample size, and this should be treated as a real limitation rather than
+a caveat - tissue-stratified claims that hinge on Point specifically
+would need softening.

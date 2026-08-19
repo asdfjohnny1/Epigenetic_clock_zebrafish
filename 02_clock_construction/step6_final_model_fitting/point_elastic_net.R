@@ -182,6 +182,7 @@ process_scaffold <- function(scaffold_file, sample_data, output_r2_dir, input_di
     
   }
   if (is.null(file_entry$failed_models)) file_entry$failed_models <- list()
+  if (is.null(file_entry$all_outer_validation_metrics)) file_entry$all_outer_validation_metrics <- list()
   
   # Initialise running mean and SD for online z-scoring ( chosing of best model - aiming for smaller cpg models)
   file_entry$best_metrics$best_score = -Inf 
@@ -764,13 +765,26 @@ process_scaffold <- function(scaffold_file, sample_data, output_r2_dir, input_di
           }
         }
         
+        # --- Record this outer iteration's held-out validation metrics ---
+        # (kept for all num_runs_outer iterations so mean +/- CI can be
+        # computed downstream; the "keep best" logic immediately below is
+        # unchanged and still selects the single reported model)
+        if (!is.null(final_val_predicted_ages) && !is.na(final_validation_r2)) {
+          file_entry$all_outer_validation_metrics[[paste0("outer_", i)]] <- list(
+            outer_iteration = i,
+            val_r_squared   = final_validation_r2,
+            val_mae         = final_validation_mae,
+            n_cpg           = length(final_cpg)
+          )
+        }
+
         # 6.11 Keep best validation model
         if (!is.null(file_entry$best_metrics$best_model) && !is.null(final_val_predicted_ages)) {
-          
+
           if (!is.na(final_validation_r2) &&
               final_validation_r2> file_entry$best_metrics$best_val_r_squared) {
             message("Starting STEP 6.11")
-            
+
             file_entry$best_metrics$best_val_r_squared<- final_validation_r2
             file_entry$best_metrics$best_val_mae <- final_validation_mae
             file_entry$best_metrics$final_val_predicted_ages <- final_val_predicted_ages

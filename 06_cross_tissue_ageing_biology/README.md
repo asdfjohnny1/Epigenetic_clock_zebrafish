@@ -28,3 +28,17 @@ Input: the collated result tables from
 [`03_combine_results/`](../03_combine_results/), and the mapped regulatory
 regions from [`04_regulatory_region_mapping/`](../04_regulatory_region_mapping/)
 (needed for part 9 only).
+
+## Supplementary checks
+
+Three standalone, self-contained scripts (not part of the numbered 1-10
+sequence above, and not dependent on it) that re-check specific figure/text
+claims. All three are fully runnable from data already tracked in this repo
+(`results_cpg_final.csv`, `methylation_cpgs.csv`) - none needs the excluded
+large per-organ methylation matrices.
+
+| File | Checks |
+|---|---|
+| `11_check_drift_duplication_and_direction.Rmd` | Whether Figures 4D and 5D are drawn from the same underlying CpG set, and re-derives the per-organ drift direction for all three CpG-set definitions used across the paper. |
+| `12_check_entropy_direction.Rmd` | Re-derives the CpG-wise and sample-wise entropy ranking per organ behind Figure 7C. |
+| `13_check_exact_panel_ageing_rate.Rmd` | Re-runs the clock-free methylation-slope ageing-rate check (Kruskal-Wallis + pairwise Wilcoxon) on the exact 30-CpG overlapping panel used elsewhere in the paper, instead of the broader 170-CpG "robust CpG" panel. |

@@ -1,0 +1,192 @@
+---
+title: "Check: tissue-ageing-rate ranking on the exact 30-CpG overlapping panel"
+author: "Jean-Charles de coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+SUPPLEMENTARY CHECK - not part of the main numbered pipeline (01-10).
+=================================================================
+The Delta-Age-based tissue-ageing-rate ranking (intestine fastest,
+caudal fin slowest) was checked against a clock-free methylation-slope
+test on the 170-CpG "robust CpG" panel (the panel used in
+08_dynamic_network_pca_entropy.Rmd etc.), which instead showed brain
+clearly the slowest and caudal fin/intestine statistically
+indistinguishable (Kruskal-Wallis chi-sq = 11.9, df = 2, p = 0.003;
+pairwise Wilcoxon brain-fin p = 0.005, brain-intestine p = 0.005,
+fin-intestine p = 0.86). This re-runs that check on the exact 30-CpG
+panel used elsewhere in the paper (best_cpg_overlap_single,
+"Brain;Caudal_Fin;Intestines" - the panel behind Figure 4D/5D and 7C)
+instead of the broader 170-CpG panel.
+
+All 30 CpGs in best_cpg_overlap_single are a subset of the 170-CpG panel
+in methylation_cpgs.csv (checked directly - 30 of 30 present), which is
+tracked in this repo (only the raw per-organ .tsv matrices under
+data/Metrics_all_models/methylation_data/ are excluded, not this file).
+So this check is fully self-contained: it does not require 01-08 to have
+been run first, and needs no excluded data.
+=================================================================
+-->
+
+```{r config}
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+suppressPackageStartupMessages({
+  library(here)
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(tibble)
+  library(readr)
+  library(GenomicRanges)
+  library(ggplot2)
+})
+```
+
+# Derive the exact 30-CpG panel
+
+Verbatim reproduction of the overlap-computation logic from
+`03_best_model_ranking_significance.Rmd`, restricted to what
+`best_cpg_overlap_single` needs (the k=3 "Brain;Caudal_Fin;Intestines"
+intersection).
+
+```{r load-and-derive-panel}
+clean_up_data <- function(df) {
+  df %>%
+    filter(dataset == "Validation") %>%
+    filter(!model %in% c("old_elastic_net", "old_lasso")) %>%
+    mutate(unique_model_id = paste(cpg_grouping, model_id, sep = "_")) %>%
+    mutate(organ = case_when(
+      organ == "Fin_clip_caudal" ~ "Caudal_Fin",
+      organ == "All_organs" ~ "Multi_organ",
+      TRUE ~ organ
+    ))
+}
+
+cpg_data <- read.csv(here("data/Metrics_all_models/final_merged/results_cpg_final.csv"))
+cpg_data_validation <- clean_up_data(cpg_data)
+
+cpg_data_validation_long <- cpg_data_validation %>%
+  tidyr::separate_rows(selected_cpgs, sep = ";") %>%
+  dplyr::mutate(selected_cpgs = trimws(selected_cpgs)) %>%
+  mutate(selected_cpgs = gsub("chr", "", selected_cpgs)) %>%
+  separate(selected_cpgs, c("chr", "start", "end"), remove = FALSE, sep = ":")
+
+cpg_ranges <- cpg_data_validation_long %>%
+  dplyr::select(organ, selected_cpgs, chr, start, end) %>%
+  mutate(start = as.numeric(start), end = as.numeric(end))
+
+cpg_granges_list <- cpg_ranges %>%
+  group_by(organ) %>%
+  summarise(
+    gr = list(GRanges(seqnames = chr, ranges = IRanges(start = start, end = end), cpg = selected_cpgs)),
+    .groups = "drop"
+  ) %>%
+  deframe()
+
+organ_names <- names(cpg_granges_list)
+overlap_results <- list()
+for (k in 2:length(organ_names)) {
+  combs <- combn(organ_names, k, simplify = FALSE)
+  overlap_results[[paste0("k", k)]] <- map_df(combs, function(orgs_combo) {
+    gr_list <- cpg_granges_list[orgs_combo]
+    cpg_vectors <- lapply(gr_list, function(gr) gr$cpg)
+    intersect_cpgs <- Reduce(intersect, cpg_vectors)
+    if (length(intersect_cpgs) == 0) return(NULL)
+    tibble(organs = paste(orgs_combo, collapse = ";"), cpg = intersect_cpgs)
+  })
+}
+k2_plus_df <- bind_rows(overlap_results, .id = "k")
+
+best_cpg_overlap_single <- k2_plus_df %>%
+  filter(organs == "Brain;Caudal_Fin;Intestines") %>%
+  pull(cpg)
+
+cat("Exact overlapping panel size:", length(best_cpg_overlap_single), "CpGs\n")
+stopifnot(length(best_cpg_overlap_single) > 0)
+```
+
+# Load methylation values and check panel coverage
+
+```{r load-methylation}
+methylation_best_cpgs <- read_csv(here("data/Metrics_all_models/methylation_data/methylation_cpgs.csv"),
+                                   show_col_types = FALSE) %>%
+  mutate(Organ = case_when(Organ == "Fin_clip_caudal" ~ "Caudal_Fin", TRUE ~ Organ))
+
+panel_170 <- unique(methylation_best_cpgs$tile)
+matched_cpgs <- intersect(best_cpg_overlap_single, panel_170)
+
+cat("Exact panel CpGs found in methylation_cpgs.csv:", length(matched_cpgs),
+    "of", length(best_cpg_overlap_single), "\n")
+
+if (length(matched_cpgs) < length(best_cpg_overlap_single)) {
+  cat(length(best_cpg_overlap_single) - length(matched_cpgs),
+      "CpGs from the exact panel are NOT in methylation_cpgs.csv and would need",
+      "the excluded raw per-organ .tsv matrices to include.\n")
+}
+```
+
+# Per-CpG, per-organ slope (exact panel only)
+
+Reuses the same slope construction as
+`07_methylation_drift_and_pcgt_enrichment.Rmd` (`lm(meth ~ Age)` per
+CpG per organ), restricted to the exact panel and to the three organs
+being ranked.
+
+```{r slopes}
+df_panel <- methylation_best_cpgs %>%
+  filter(tile %in% matched_cpgs, Organ %in% c("Brain", "Caudal_Fin", "Intestines")) %>%
+  mutate(Age_numeric = as.numeric(as.character(Age)))
+
+slopes_exact_panel <- df_panel %>%
+  group_by(Organ, tile) %>%
+  summarise(slope = coef(lm(methylation ~ Age_numeric))[2], .groups = "drop")
+
+cat("CpG x organ slope rows:", nrow(slopes_exact_panel), "\n")
+table(slopes_exact_panel$Organ)
+```
+
+# Kruskal-Wallis + pairwise Wilcoxon on the exact panel
+
+Same test structure as the original 170-CpG-panel check, for direct
+comparison.
+
+```{r kw-test}
+kw <- kruskal.test(slope ~ Organ, data = slopes_exact_panel)
+print(kw)
+
+pw <- pairwise.wilcox.test(slopes_exact_panel$slope, slopes_exact_panel$Organ,
+                            p.adjust.method = "none")
+print(pw)
+
+cat("\n=== Reference: 170-CpG panel result (already reported) ===\n")
+cat("Kruskal-Wallis chi-sq = 11.9, df = 2, p = 0.003\n")
+cat("Pairwise Wilcoxon: brain-fin p = 0.005, brain-intestine p = 0.005, fin-intestine p = 0.86\n")
+```
+
+```{r plot}
+ggplot(slopes_exact_panel, aes(x = Organ, y = slope, colour = Organ, fill = Organ)) +
+  geom_violin(alpha = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Methylation-vs-age slope per CpG, exact 30-CpG overlapping panel",
+       y = "dM/dAge", x = "") +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "none")
+```
+
+# Interpretation
+
+If the exact-panel result (Kruskal-Wallis p and the three pairwise
+p-values above) agrees in direction with the 170-CpG-panel reference
+numbers printed above - brain clearly slowest, fin and intestine not
+distinguishable - that confirms the clock-free check is not an artefact
+of which CpG panel was used, and strengthens the case for softening
+"caudal fin ages slowest" in favour of "brain shows the most
+stable/slowest methylation change." If the ranking instead changes on
+this much smaller panel (30 vs 170 CpGs), treat that as a real
+sensitivity to panel choice worth reporting explicitly rather than
+picking whichever result is more convenient.

@@ -26,3 +26,13 @@ for (f in sort(list.files(pattern = "\\.Rmd$"))) rmarkdown::render(f)
 
 Input: the collated result tables from
 [`03_combine_results/`](../03_combine_results/).
+
+## Supplementary checks
+
+Two standalone, self-contained scripts (not part of the numbered 1-5
+sequence above, and not dependent on it) that re-check specific claims:
+
+| File | Checks |
+|---|---|
+| `06_check_model_count_robustness.Rmd` | Whether the Tile > Point/Cluster performance ranking holds once all three CpG-grouping strategies are subsampled down to Point's (much smaller) per-tissue model count. |
+| `07_check_outer_iteration_variability.Rmd` | Mean +/- 95% CI performance across all 100 outer iterations of step 6, instead of only the single best iteration. Requires step 6 to be re-run with the patched scripts in [`02_clock_construction/step6_final_model_fitting/`](../02_clock_construction/step6_final_model_fitting/) first - see that script's header comment for the full prerequisite chain. 

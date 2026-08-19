@@ -1,0 +1,189 @@
+---
+title: "Check: mean +/- CI performance across outer iterations"
+author: "Jean-Charles de coriolis"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+<!--
+=================================================================
+SUPPLEMENTARY CHECK - not part of the main numbered pipeline (01-06).
+=================================================================
+Step 6 (02_clock_construction/step6_final_model_fitting/) keeps only the
+single best-performing outer iteration out of 100 for the headline
+result - with ~12 fish per held-out validation fold, this risks reported
+performance being inflated relative to what a fresh dataset would show
+(a winner's-curse pattern). The six step-6 scripts (point/cluster/tile x
+elastic_net/lasso) record every outer iteration's held-out validation
+metrics (val_r_squared, val_mae, n_cpg), not just the best one, so mean
++/- CI performance can be reported alongside the headline numbers. The
+"keep best" logic that produces the headline numbers is unchanged, so
+the single-best-iteration numbers already in results_metrics_final.csv
+stay comparable.
+
+This script needs two things run first, in order:
+
+  1. Step 6, run on the HPC (the large raw per-organ methylation matrices
+     it depends on are not part of this repo - see data/README.md).
+  2. 03_combine_results/03_collate_outer_iteration_metrics.R, run once
+     against the *_clock_modelled.rds outputs, producing
+     results_outer_iterations.csv (long format: one row per model x
+     outer iteration).
+
+Point EPICLOCK_ROOT at a project root containing that CSV to run this as
+a normal, self-contained analysis.
+=================================================================
+-->
+
+```{r config}
+PROJECT_ROOT <- Sys.getenv("EPICLOCK_ROOT", unset = normalizePath("."))
+suppressPackageStartupMessages({
+  library(here)
+  library(dplyr)
+  library(ggplot2)
+})
+
+outer_file <- here("results/results_outer_iterations.csv")
+# If you ran 03_collate_outer_iteration_metrics.R with its default
+# output_folder (under PROJECT_ROOT/multitissue/...), copy or symlink its
+# results_outer_iterations.csv into this repo's results/ folder, or edit
+# outer_file above to point at it directly.
+```
+
+```{r check-file-exists}
+if (!file.exists(outer_file)) {
+  stop(
+    "results_outer_iterations.csv not found at: ", outer_file, "\n",
+    "This means the two steps in the header comment above haven't been run ",
+    "yet (run step 6, then run ",
+    "03_combine_results/03_collate_outer_iteration_metrics.R). ",
+    "This check cannot proceed without it - there is no way to recover ",
+    "per-outer-iteration performance from .rds outputs that predate the ",
+    "all_outer_validation_metrics field."
+  )
+}
+```
+
+# Load outer-iteration metrics and the existing single-best-iteration summary
+
+```{r load-data}
+outer_metrics <- read.csv(outer_file)
+
+best_iteration_metrics <- read.csv(here("data/Metrics_all_models/final_merged/results_metrics_final.csv")) %>%
+  filter(dataset == "Validation")
+
+cat("Outer-iteration rows loaded:", nrow(outer_metrics), "\n")
+cat("Unique model configurations (model_id):", n_distinct(outer_metrics$model_id), "\n")
+cat("Outer iterations per model (should be up to 100):\n")
+print(summary(as.numeric(table(outer_metrics$model_id))))
+```
+
+# Mean +/- 95% CI across outer iterations, per CpG-grouping x model config
+
+```{r mean-ci-summary}
+outer_summary <- outer_metrics %>%
+  group_by(cpg_grouping, model, organ, rsq_threshold, filter) %>%
+  summarise(
+    n_outer      = n(),
+    mean_r2      = mean(val_r_squared, na.rm = TRUE),
+    sd_r2        = sd(val_r_squared, na.rm = TRUE),
+    ci95_r2      = 1.96 * sd_r2 / sqrt(n_outer),
+    mean_mae     = mean(val_mae, na.rm = TRUE),
+    sd_mae       = sd(val_mae, na.rm = TRUE),
+    ci95_mae     = 1.96 * sd_mae / sqrt(n_outer),
+    .groups = "drop"
+  )
+
+outer_summary %>%
+  arrange(desc(mean_r2)) %>%
+  head(20) %>%
+  print(width = Inf)
+```
+
+# Compare against the single-best-iteration numbers already reported
+
+```{r compare-best-vs-mean}
+comparison <- outer_summary %>%
+  left_join(
+    best_iteration_metrics %>%
+      dplyr::select(cpg_grouping, model, organ, rsq_threshold, filter,
+                    best_r2 = r_squared_value, best_mae = mae),
+    by = c("cpg_grouping", "model", "organ", "rsq_threshold", "filter")
+  ) %>%
+  mutate(
+    r2_inflation  = best_r2 - mean_r2,
+    mae_deflation = mean_mae - best_mae
+  )
+
+cat("=== How much does picking the single best outer iteration inflate R^2",
+    "relative to the 100-iteration mean? ===\n")
+cat("Median R^2 inflation (best - mean):", round(median(comparison$r2_inflation, na.rm = TRUE), 3), "\n")
+cat("Median MAE deflation (mean - best):", round(median(comparison$mae_deflation, na.rm = TRUE), 3), "\n\n")
+
+cat("Fraction of configs where the reported best R^2 sits outside the",
+    "95% CI of the 100-iteration mean:\n")
+outside_ci <- comparison %>%
+  mutate(outside = best_r2 > (mean_r2 + ci95_r2)) %>%
+  summarise(pct = round(100 * mean(outside, na.rm = TRUE), 1))
+print(outside_ci)
+```
+
+```{r plot}
+ggplot(comparison, aes(x = mean_r2, y = best_r2, colour = cpg_grouping)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = "Reported best-iteration R^2 vs. 100-iteration mean R^2",
+    x = "Mean R^2 across 100 outer iterations",
+    y = "R^2 of the single reported (best) iteration",
+    colour = ""
+  ) +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+# Re-run the main CpG-grouping comparison using the mean instead of the best
+
+```{r rerun-main-comparison}
+suppressPackageStartupMessages({
+  library(lme4)
+  library(car)
+  library(scales)
+})
+
+ranked_mean <- outer_summary %>%
+  group_by(cpg_grouping, model, organ) %>%
+  mutate(
+    mae_score = scales::rescale(-mean_mae),
+    r2_score  = scales::rescale(mean_r2)
+  ) %>%
+  ungroup() %>%
+  mutate(performance_score = mae_score + r2_score)
+
+m_mean <- lmer(
+  performance_score ~ organ * cpg_grouping + (1 | rsq_threshold),
+  data = ranked_mean
+)
+Anova(m_mean, type = "III")
+```
+
+# Interpretation
+
+The plot above should sit mostly above the dashed y=x line if the
+winner's-curse pattern is real - the single reported "best" iteration
+should systematically look better than the honest 100-iteration mean.
+The `outside_ci` figure quantifies how often the reported number is
+outside what 100-iteration sampling variability alone would produce.
+
+The final model refit (`ranked_mean`) repeats the main CpG-grouping
+comparison using mean-across-outer-iterations performance instead of
+best-of-100 - compare its `Anova()` output (chi-sq, p-values, direction
+of effects) against the corresponding model fit on
+`results_metrics_final.csv` in
+`05_clock_design_benchmarking/02_best_model_ranking_significance.Rmd`
+and `06_cross_tissue_ageing_biology/03_best_model_ranking_significance.Rmd`.
+If the ranking/significance pattern holds, this is a reporting fix
+(report mean +/- CI instead of best) with no knock-on effect on the
+paper's conclusions. If it changes, the affected claims need revisiting.
